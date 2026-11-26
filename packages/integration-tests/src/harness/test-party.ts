@@ -6,7 +6,7 @@
  */
 
 import debug from 'debug';
-import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
+import { createLibp2pNode, memoryNodeStorage } from '@optimystic/db-p2p';
 import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, NODE_ROLE_PRESETS } from '@serfab/cadre-core';
 import type { NodeClass } from '@serfab/cadre-core';
 import type { Libp2p } from '@libp2p/interface';
@@ -40,7 +40,7 @@ async function createTestNode(
     port,
     bootstrapNodes,
     networkName,
-    storage: () => new MemoryRawStorage(),
+    storage: memoryNodeStorage(),
     // The class's own `overlayTier` role, not a second copy of the mapping: a bare harness node
     // must take the tier `CadreNode` would have given it (`cadre-core/src/node-roles.ts`).
     fretProfile: NODE_ROLE_PRESETS[nodeClass].overlayTier,

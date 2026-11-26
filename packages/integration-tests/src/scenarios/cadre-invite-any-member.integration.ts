@@ -70,7 +70,7 @@ describe('E2E owner grant and cadre invitation redeemed at a member while the ow
 		function buildA(): CadreNode {
 			return new CadreNode(controlNodeConfig({
 				partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none',
-				listenAddrs: [], storageProvider: captureA.provider, bootstrapPeerStore: aPeerStore,
+				listenAddrs: [], storageProvider: captureA.open, bootstrapPeerStore: aPeerStore,
 			}));
 		}
 

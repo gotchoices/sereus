@@ -449,10 +449,10 @@ interface ClosedStrandFixture {
  * call gets its OWN provisioner instance (its counter is per-instance), so nothing
  * two bring-ups create can collide.
  *
- * Each node's storage provider is a {@link captureRawStorage} capture, so the fixture can
+ * Each node's `storage.open` is a {@link captureRawStorage} capture, so the fixture can
  * expose that node's strand-scoped raw block store. The capture is a PURE OBSERVATION —
- * it hands out exactly the store the plain `() => new MemoryRawStorage()` provider used
- * to, only remembered by scope — so the three tests that predate it are unaffected.
+ * it hands out exactly the storage the harness default (fresh `memoryNodeStorage()` per scope)
+ * gives, only remembered by scope — so the three tests that predate it are unaffected.
  *
  * On any internal failure both nodes are stopped before the error is rethrown —
  * otherwise a bring-up fault leaks live libp2p nodes into the rest of the file.
@@ -491,7 +491,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		// strand-removal-cuts-network and strand-party-removal-via-formation-e2e.
 		founderNode = new CadreNode(controlNodeConfig({
 			partyId: `founder-${partyId}`,
-			storageProvider: founderCapture.provider,
+			storageProvider: founderCapture.open,
 			nodeClass: 'server',
 			enableRelay: true,
 			membershipReconciliation: false,
@@ -501,7 +501,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 
 		joinerNode = new CadreNode(controlNodeConfig({
 			partyId: `joiner-${partyId}`,
-			storageProvider: joinerCapture.provider,
+			storageProvider: joinerCapture.open,
 			bootstrapNodes: founderNode.getMultiaddrs(),
 			membershipReconciliation: false,
 			revocationSuspended: true,

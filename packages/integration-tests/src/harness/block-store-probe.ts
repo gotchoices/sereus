@@ -24,18 +24,23 @@
  * the blocks behind those reads stay absent from its raw store. Treat it as a caution that
  * costs nothing to respect, not as measured behaviour.
  *
- * SCOPE KEYS. `CadreNodeConfig.storage.provider` is a per-scope factory: cadre-core calls
- * it as `provider(controlStorageScope(partyId))` for the control database and as
- * `provider(strandId)` for each strand (`cadre-node.ts` → `buildControlNodeOptions`,
+ * SCOPE KEYS. `CadreNodeConfig.storage.open` is called once per scope: cadre-core calls it as
+ * `open(controlStorageScope(partyId))` for the control database and as `open(strandId)` for
+ * each strand, a CLIENT strand included (`cadre-node.ts` → `buildControlNodeOptions`,
  * `strand-instance-manager.ts` → `resolveStrandStorage`). The control key carries the
  * party id so two parties never share a control store; {@link isControlStorageScope} is
  * how this module tells the two kinds of key apart without spelling either out.
- * {@link captureRawStorage} keys the stores it hands out by that scope string, so a test
+ * {@link captureRawStorage} keys the storage it hands out by that scope string, so a test
  * can grab exactly the strand-scoped store with control-database blocks cleanly excluded.
+ *
+ * BLOCKS ONLY. A scope's storage is three stores — blocks, a key-value store and a blob piece
+ * store — and every probe here is about the block store, so that is what the accessors hand
+ * back. Nothing reads the other two yet; add an accessor when a scenario needs one rather than
+ * widening these.
  */
 
 import type { ActionId, ActionRev, BlockId } from '@optimystic/db-core';
-import { MemoryRawStorage, type IRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type IRawStorage, type NodeStorage } from '@optimystic/db-p2p';
 import { isControlStorageScope } from '@serfab/cadre-core';
 import { waitUntil } from './wait-utils.js';
 
@@ -48,7 +53,7 @@ export class BlockStoreProbeError extends Error {
 }
 
 /**
- * Every raw store a node's config handed out, keyed by the scope it was asked for.
+ * Every node storage a node's config handed out, keyed by the scope it was asked for.
  *
  * One capture belongs to ONE node. Two nodes sharing a capture would share their stores
  * and any replication assertion between them would pass for the worst possible reason —
@@ -57,60 +62,63 @@ export class BlockStoreProbeError extends Error {
  * capture can hold several control stores beside one store per strand id.
  */
 export interface RawStorageCapture {
-	/** Pass as `storage.provider` in a `CadreNodeConfig`. */
-	provider: (scope: string) => IRawStorage;
-	/** The store created for `strandId`; throws naming the scopes seen if absent. */
+	/** Pass as `storage.open` in a `CadreNodeConfig`. */
+	open: (scope: string) => Promise<NodeStorage>;
+	/** The BLOCK store created for `strandId`; throws naming the scopes seen if absent. */
 	forStrand(strandId: string): IRawStorage;
 	/**
-	 * The control database's store. Throws if the node never asked for one, rather than
-	 * minting an empty store the way `provider(...)` would — an empty store passes every
+	 * The control database's BLOCK store. Throws if the node never asked for one, rather than
+	 * minting an empty store the way `open(...)` would — an empty store passes every
 	 * coverage assertion vacuously, which is the failure this module exists to prevent.
 	 * Throws too when the node served more than one party, rather than picking one of
 	 * their stores.
 	 */
 	control(): IRawStorage;
-	/** Every scope the provider has been asked for so far (the control key plus strand ids). */
+	/** Every scope `open` has been asked for so far (the control key plus strand ids). */
 	scopes(): string[];
 }
 
 /**
- * A storage provider that remembers the store it made for each scope.
+ * A `StorageConfig.open` that remembers the storage it opened for each scope.
  *
- * MEMOIZED PER SCOPE, deliberately. cadre-core's `RawStorageProvider` contract calls a
- * provider once per scope per runtime, and again for that scope after its runtime stops
- * (`stopStrand`, or a `stop()` then `start()` cycle) — a second call must reach the SAME
- * durable backend. Memoizing is how this capture honours that: it behaves like a real
- * persistent provider (one directory per scope), which is the shape under test, and it
- * keeps `forStrand` returning the store the live node is actually writing to.
+ * MEMOIZED PER SCOPE, deliberately. cadre-core calls `open` once per scope per runtime, and
+ * again for that scope after its runtime stops (`stopStrand`, or a `stop()` then `start()`
+ * cycle) — a second call must reach the SAME durable backend. Memoizing is how this capture
+ * honours that: it behaves like a real persistent opener (one location per scope), which is
+ * the shape under test, and it keeps `forStrand` returning the store the live node is
+ * actually writing to.
  *
- * @param factory - Builds one store. Defaults to an in-memory store, which is what every
- *   scenario in this package uses.
+ * @param factory - Builds one scope's storage. Takes the scope so a file-backed capture can
+ *   name a directory per scope; the memo means it is called at most once per scope. Defaults
+ *   to in-memory storage, which is what nearly every scenario in this package uses.
  */
-export function captureRawStorage(factory: () => IRawStorage = () => new MemoryRawStorage()): RawStorageCapture {
-	const stores = new Map<string, IRawStorage>();
+export function captureRawStorage(
+	factory: (scope: string) => NodeStorage = () => memoryNodeStorage(),
+): RawStorageCapture {
+	const opened = new Map<string, NodeStorage>();
 
-	const provider = (scope: string): IRawStorage => {
-		const existing = stores.get(scope);
+	const open = async (scope: string): Promise<NodeStorage> => {
+		const existing = opened.get(scope);
 		if (existing) return existing;
-		const created = factory();
-		stores.set(scope, created);
+		const created = factory(scope);
+		opened.set(scope, created);
 		return created;
 	};
 
-	/** Every store minted under a control scope key: one per party the node has served. */
+	/** Every block store minted under a control scope key: one per party the node has served. */
 	const controlStores = (): IRawStorage[] =>
-		[...stores].filter(([scope]) => isControlStorageScope(scope)).map(([, store]) => store);
+		[...opened].filter(([scope]) => isControlStorageScope(scope)).map(([, storage]) => storage.blocks);
 
 	const control = (): IRawStorage => {
 		const found = controlStores();
 		if (found.length === 0) {
 			throw new BlockStoreProbeError(
-				`no control-database store was created yet; scopes seen so far: [${[...stores.keys()].join(', ')}]`,
+				`no control-database store was created yet; scopes seen so far: [${[...opened.keys()].join(', ')}]`,
 			);
 		}
 		if (found.length > 1) {
 			throw new BlockStoreProbeError(
-				`the node served ${found.length} parties, so there is no one control-database store; scopes seen so far: [${[...stores.keys()].join(', ')}]`,
+				`the node served ${found.length} parties, so there is no one control-database store; scopes seen so far: [${[...opened.keys()].join(', ')}]`,
 			);
 		}
 		return found[0]!;
@@ -122,10 +130,10 @@ export function captureRawStorage(factory: () => IRawStorage = () => new MemoryR
 				`'${strandId}' is a control database's scope, not a strand id — forStrand cannot serve it`,
 			);
 		}
-		const store = stores.get(strandId);
+		const store = opened.get(strandId)?.blocks;
 		if (!store) {
 			throw new BlockStoreProbeError(
-				`no raw store was created for strand '${strandId}'; scopes seen so far: [${[...stores.keys()].join(', ')}]`,
+				`no raw store was created for strand '${strandId}'; scopes seen so far: [${[...opened.keys()].join(', ')}]`,
 			);
 		}
 		// Scope collapse: if a control scope and the strand scope resolved to the SAME
@@ -141,7 +149,7 @@ export function captureRawStorage(factory: () => IRawStorage = () => new MemoryR
 		return store;
 	};
 
-	return { provider, forStrand, control, scopes: () => [...stores.keys()] };
+	return { open, forStrand, control, scopes: () => [...opened.keys()] };
 }
 
 /**

@@ -192,7 +192,7 @@ async function startPhone(runTag: number, capture: RawStorageCapture, handles: H
 	const joinedStore = new KeyStoreJoinedStrandStore(new InMemoryKeyStore(), partyId);
 	const node = new CadreNode(controlNodeConfig({
 		partyId, privateKey: key, nodeClass: 'device',
-		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
+		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.open,
 		reconcileMs: PHONE_RECONCILE_PARKED_MS, joinedStrandStore: joinedStore,
 	}));
 	handles.phone = node;
@@ -237,7 +237,7 @@ async function enrollAlwaysOn(
 	const vouchedAt = (await phone.node.getControlDatabase()!.queryPeerRecord(peerId))!.updatedAt;
 	const node = new CadreNode(controlNodeConfig({
 		partyId: phone.partyId, privateKey: key, nodeClass: 'server', hostUnclaimedStrands: true,
-		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
+		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.open,
 		pinnedOwnerKeys: [phone.publicKey],
 	}));
 	handles.alwaysOn = node;

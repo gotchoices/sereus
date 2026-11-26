@@ -64,11 +64,11 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			// ── A founds the cadre; M is admitted the owner-online way and converges ──
 			A = new CadreNode(controlNodeConfig({
 				partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none', connectionGater: gateA.gater,
-				storageProvider: captureA.provider,
+				storageProvider: captureA.open,
 			}));
 			await A.start();
 			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
-			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.provider });
+			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.open });
 			const member = M;
 			await admitMember(A, member, STARTUP_MS);
 			// M names A's key in its OwnerKey table (the seat's issuer check reads it) and lists A

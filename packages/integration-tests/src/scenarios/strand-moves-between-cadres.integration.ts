@@ -126,7 +126,7 @@ interface AppNodeOptions {
 function buildAppNode(home: AppHome, partyId: string, options: AppNodeOptions = {}): CadreNode {
 	return new CadreNode(controlNodeConfig({
 		partyId, privateKey: home.key, nodeClass: 'device', strandWatchMs: STRAND_WATCH_MS,
-		storageProvider: home.storage.provider,
+		storageProvider: home.storage.open,
 		joinedStrandStore: new KeyStoreJoinedStrandStore(home.secureStore, partyId),
 		strandNetworkStateStore: new MemoryStrandNetworkStateStore(partyId),
 		...(options.listenAddrs ? { listenAddrs: options.listenAddrs } : {}),
@@ -277,7 +277,7 @@ async function startPartyA(
 	await O.start();
 	const { publicKey: oOwnerKey } = await makeOwnOwner(O);
 	const M = await startPinningMember(partyId, oOwnerKey, {
-		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: mStorage.provider,
+		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: mStorage.open,
 	});
 	started.push(M.node);
 	await admitMember(O, M, STARTUP_MS);

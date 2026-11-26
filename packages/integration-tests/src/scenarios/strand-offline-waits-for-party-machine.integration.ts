@@ -5,9 +5,10 @@
  *
  * ── The machines ──
  *
- * One party. The PHONE is its owner: `nodeClass: 'device'`, no listen address, every strand
- * starting in offline mode over a file journal in a temp directory (Optimystic refuses a journal
- * that would not survive a restart). The NODE is an always-on storage machine
+ * One party. The PHONE is its owner: `nodeClass: 'device'`, no listen address, and file-backed
+ * storage in a temp directory, one directory per scope — every strand starts in offline mode and
+ * journals into its own scope's key-value store, which Optimystic requires to survive a restart.
+ * The NODE is an always-on storage machine
  * that pins the phone's owner key and runs a storage replica of every strand the party lists
  * (`hostUnclaimedStrands`), as a production server node does.
  *
@@ -78,8 +79,8 @@ import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import type { ConnectionGater, Libp2p, PrivateKey } from '@libp2p/interface';
-import type { IKVStore } from '@optimystic/db-p2p';
-import { FileKVStore } from '@optimystic/db-p2p-storage-fs';
+import type { IKVStore, OpenNodeStorage } from '@optimystic/db-p2p';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import { CadreNode, generateStrandMemberKey } from '@serfab/cadre-core';
 import type { StrandInstance, StrandOfflineStatus } from '@serfab/cadre-core';
 import {
@@ -209,6 +210,14 @@ async function withOfflineParty(
 		console.log(`[OFFLINE-HOLD] ${Date.now() - startedAt} ms: ${msg}`, ...args);
 	};
 	const home = mkdtempSync(join(tmpdir(), 'sereus-offline-hold-'));
+	// The phone's storage is FILE-backed, one directory per scope under `home`, because its
+	// offline journal is that scope's key-value store and Optimystic refuses a journal that would
+	// not survive a restart (a `MemoryKVStore` is the no-journal configuration). The journal is
+	// not a store of its own: Optimystic declares its key prefix in `NODE_KV_NAMESPACES` so one
+	// store serves the node and the journal, and a journal in its own directory would keep its
+	// bytes outside the one location the node measures itself against. Held out here so the
+	// cleanup below closes every storage this run opened, however the run ended.
+	const opened: OpenNodeStorage[] = [];
 	let phone: CadreNode | undefined;
 	let node: CadreNode | undefined;
 	try {
@@ -217,24 +226,21 @@ async function withOfflineParty(
 		const strandId = `strand-offline-hold-${runTag}`;
 		const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0');
 		const { phoneKey, nodeKey, nodePeerId } = keys;
-		const phoneCapture = captureRawStorage();
+		const phoneCapture = captureRawStorage((scope) => {
+			const storage = fileNodeStorage(join(home, 'storage', scope));
+			opened.push(storage);
+			return storage;
+		});
+		// The node is a storage replica with no offline mode, so in-memory storage does for it.
 		const nodeCapture = captureRawStorage();
-		// One journal per strand scope, as a production journal is: every build asks again.
-		const journals = new Map<string, IKVStore>();
-		const journal = (scope: string): IKVStore => {
-			let store = journals.get(scope);
-			if (!store) {
-				store = new FileKVStore(join(home, 'offline', scope));
-				journals.set(scope, store);
-			}
-			return store;
-		};
+		/** The strand's offline journal: its own scope's key-value store, opened once per scope. */
+		const journal = async (scope: string): Promise<IKVStore> => (await phoneCapture.open(scope)).kv;
 
 		// ── 1. The phone founds and publishes; the node is admitted and launches a replica ──
 		phone = new CadreNode(controlNodeConfig({
 			partyId, privateKey: phoneKey, nodeClass: 'device', listenAddrs: [],
 			reconcileMs: 2_000, strandAddrRefreshMs: POLL_MS, strandWatchMs: POLL_MS, linkRoundTripMs: LINK_MS,
-			storageProvider: phoneCapture.provider, connectionGater: gaters.phone,
+			storageProvider: phoneCapture.open, connectionGater: gaters.phone,
 			strandOffline: { journal, initialMode: 'offline' },
 			membershipReconciliation: { pollIntervalMs: 2_000 },
 		}));
@@ -259,7 +265,7 @@ async function withOfflineParty(
 		node = new CadreNode(controlNodeConfig({
 			partyId, privateKey: nodeKey, nodeClass: 'server', pinnedOwnerKeys: [owner.publicKey], enableRelay: false,
 			strandFilter: 'all', hostUnclaimedStrands: true, strandWatchMs: POLL_MS, reconcileMs: 2_000, linkRoundTripMs: LINK_MS,
-			storageProvider: nodeCapture.provider, connectionGater: gaters.node,
+			storageProvider: nodeCapture.open, connectionGater: gaters.node,
 			membershipReconciliation: { pollIntervalMs: 2_000 },
 		}));
 		await node.start();
@@ -276,7 +282,10 @@ async function withOfflineParty(
 		await flow({ say, strandId, phone, node, phoneStrand, replica, nodeStrandPeerId, statuses, phoneCapture, nodeCapture });
 	} finally {
 		await Promise.allSettled([node?.stop(), phone?.stop()]);
-		// Only the journal's files, written by this process: no node_modules junctions.
+		// The phone's storage is closed only now — cadre-core closes nothing it was handed — so
+		// its write-ahead logs are checkpointed and its directory locks released before the
+		// directory goes. Only files written by this process: no node_modules junctions.
+		await Promise.allSettled(opened.map((storage) => storage.close()));
 		rmSync(home, { recursive: true, force: true });
 	}
 }

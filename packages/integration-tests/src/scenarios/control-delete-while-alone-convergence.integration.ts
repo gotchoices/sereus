@@ -32,7 +32,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '@serfab/cadre-core';
 import type { NodeClass } from '@serfab/cadre-core';
 import {
@@ -47,21 +46,29 @@ import {
 	compareBlockCoverage,
 	blockCoverageIsComplete,
 	formatBlockCoverageGap,
+	captureRawStorage,
+	type RawStorageCapture,
 	type TestOwnerKey,
 } from '../harness/index.js';
 
 /**
- * A node pinned to `store` — the SAME `MemoryRawStorage` instance for every scope, so
- * its rows survive the stop/restart choreography this file depends on. That pinning is
- * the only thing here the harness default (a fresh store per scope) would break.
+ * A node pinned to `capture` — one in-memory `NodeStorage` per scope, kept by the capture and
+ * handed back to every later `open` of that scope, so the node's rows survive the stop/restart
+ * choreography this file depends on. That survival is the only thing here the harness default
+ * (fresh storage per scope per node) would break.
+ *
+ * A capture rather than one store shared by every scope, which is no longer a configuration a
+ * caller can write (`StorageConfig.open`). Nothing is lost: this party runs no strands, so the
+ * control database is the only scope either node ever opens, and `capture.control()` names its
+ * block store for the coverage checks below.
  */
 function nodeOn(
 	partyId: string,
 	privateKey: PrivateKey,
-	store: MemoryRawStorage,
+	capture: RawStorageCapture,
 	nodeClass: NodeClass,
 ): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: () => store }));
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.open }));
 }
 
 interface AloneRemoval {
@@ -69,8 +76,8 @@ interface AloneRemoval {
 	aKey: PrivateKey;
 	/** The party's owner key: A wires it again after each restart, since the store keeps only its row. */
 	ownerKey: TestOwnerKey;
-	storeA: MemoryRawStorage;
-	storeB: MemoryRawStorage;
+	captureA: RawStorageCapture;
+	captureB: RawStorageCapture;
 	bKey: PrivateKey;
 	xPeerId: string;
 	xStampId: string;
@@ -97,18 +104,18 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 	const partyId = `ctrl-del-alone-${tag}-${Date.now()}`;
 	const aKey = await generateKeyPair('Ed25519');
 	const bKey = await generateKeyPair('Ed25519');
-	const storeA = new MemoryRawStorage();
-	const storeB = new MemoryRawStorage();
+	const captureA = captureRawStorage();
+	const captureB = captureRawStorage();
 	const xPeerId = await randomPeerId();
 
 	// ── Phase 1: A + B up, X authorized, X converged on B ────────────────────
-	let A = nodeOn(partyId, aKey, storeA, 'server');
+	let A = nodeOn(partyId, aKey, captureA, 'server');
 	let B: CadreNode | undefined;
 	try {
 		await A.start();
 		const ownerKey = await makeOwnOwner(A);
 
-		B = nodeOn(partyId, bKey, storeB, 'device');
+		B = nodeOn(partyId, bKey, captureB, 'device');
 		await B.start();
 		await A.authorizePeer(B.peerId!.toString());
 
@@ -140,10 +147,10 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		// `isMember` check above only proved readable OVER THE NETWORK (see the header
 		// comment on `block-store-probe.ts`). The same gate `control-offline-read-after-restart`
 		// asserts at its own phase 3.
-		await awaitBlockCoverage(storeA, storeB, {
+		await awaitBlockCoverage(captureA.control(), captureB.control(), {
 			description: "peer-join catch-up covers B's raw control store",
 		});
-		const indexB = await readBlockIndex(storeB);
+		const indexB = await readBlockIndex(captureB.control());
 		expect([...indexB.keys()]).toEqual(
 			expect.arrayContaining(['default/cadrecontrol/CadrePeer']),
 		);
@@ -158,15 +165,15 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		// store (which survives past B.stop() — only the node object tears down)
 		// should still cover A's here. Measured, not loosened: a flake here is a
 		// replication finding about the drain, not a reason to remove the assertion.
-		const postStopGap = await compareBlockCoverage(storeA, storeB);
+		const postStopGap = await compareBlockCoverage(captureA.control(), captureB.control());
 		expect(
 			blockCoverageIsComplete(postStopGap),
 			`B should still cover A's drained writes after both nodes stop — ${formatBlockCoverageGap(postStopGap)}`,
 		).toBe(true);
 		B = undefined;
-		A = nodeOn(partyId, aKey, storeA, 'server');
+		A = nodeOn(partyId, aKey, captureA, 'server');
 		await A.start();
-		// OwnerKey row survived on storeA — only the owner signer wiring is
+		// OwnerKey row survived in A's control store — only the owner signer wiring is
 		// per-process. No re-insert.
 		await A.useOwnerSigner(ownerKey.signer);
 		expect(await A.isMember(xPeerId)).toBe(true);
@@ -181,7 +188,7 @@ async function removeWhileAlone(tag: string): Promise<AloneRemoval> {
 		expect(await A.isMember(xPeerId)).toBe(false);
 		expect(A.getControlNode()!.getConnections().length).toBe(0);
 
-		return { partyId, aKey, ownerKey, storeA, storeB, bKey, xPeerId, xStampId: xStampId!, A };
+		return { partyId, aKey, ownerKey, captureA, captureB, bKey, xPeerId, xStampId: xStampId!, A };
 	} catch (error) {
 		await A.stop();
 		throw error;
@@ -222,7 +229,7 @@ describe('Control-DB delete-while-alone re-replication', () => {
 			ctx = await removeWhileAlone('reconnect');
 
 			// ── Phase 4: B comes back and reconnects ───────────────────────────────
-			B = nodeOn(ctx.partyId, ctx.bKey, ctx.storeB, 'device');
+			B = nodeOn(ctx.partyId, ctx.bKey, ctx.captureB, 'device');
 			await B.start();
 			await expectRemovalConverges(ctx, B);
 		} finally {
@@ -242,14 +249,14 @@ describe('Control-DB delete-while-alone re-replication', () => {
 			// the fresh process holds only the durable tombstone row. The first
 			// cohort growth after start must SWEEP it — nothing in memory points at it.
 			await ctx.A.stop();
-			ctx.A = nodeOn(ctx.partyId, ctx.aKey, ctx.storeA, 'server');
+			ctx.A = nodeOn(ctx.partyId, ctx.aKey, ctx.captureA, 'server');
 			await ctx.A.start();
 			await ctx.A.useOwnerSigner(ctx.ownerKey.signer);
 			expect(await ctx.A.isMember(ctx.xPeerId)).toBe(false);
 			expect(ctx.A.getControlNode()!.getConnections().length).toBe(0);
 
 			// ── Phase 4: only now does B come back ─────────────────────────────────
-			B = nodeOn(ctx.partyId, ctx.bKey, ctx.storeB, 'device');
+			B = nodeOn(ctx.partyId, ctx.bKey, ctx.captureB, 'device');
 			await B.start();
 			await expectRemovalConverges(ctx, B);
 		} finally {

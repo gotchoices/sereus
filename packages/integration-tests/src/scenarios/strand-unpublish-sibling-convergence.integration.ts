@@ -39,7 +39,7 @@
  *   admitted the strand never observes the removal);
  * - the doc claim that a stopped node RETAINS the strand's local durable storage
  *   (docs/strands/lifecycle.md → "Limits and accepted tradeoffs") — this harness
- *   stores into `MemoryRawStorage` owned by the node being torn down, so there is
+ *   stores into in-memory `NodeStorage` owned by the node being torn down, so there is
  *   nothing outliving the stop to read back; proving retention needs a
  *   persistent-storage fixture;
  * - a third node.

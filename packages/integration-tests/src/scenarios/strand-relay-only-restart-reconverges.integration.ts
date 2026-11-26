@@ -66,7 +66,7 @@
  * ── Why the two-process arm exists ──
  *
  * In one process the "restart" is not a clean one. `captureRawStorage` hands a scope the same
- * `IRawStorage` object for its whole lifetime, so the rebuilt node reopens LIVE in-memory
+ * `NodeStorage` value for its whole lifetime, so the rebuilt node reopens LIVE in-memory
  * stores, not files; and any module-level state in cadre-core, libp2p or optimystic survives
  * the rebuild. The reporter's caveat about their own one-process reproduction was exactly
  * this. The two-process arm removes both.
@@ -204,7 +204,7 @@ async function startPartyNode(home: PartyHome, relay: DedicatedRelay): Promise<C
 		enableRelay: false,
 		listenAddrs: [],
 		relayAddrs: [relay.dialAddr],
-		storageProvider: home.storage.provider,
+		storageProvider: home.storage.open,
 		joinedStrandStore: new KeyStoreJoinedStrandStore(home.joinedKeys, home.partyId),
 		...(home.networkStateSlot !== undefined
 			? { strandNetworkStateStore: await PersistentStrandNetworkStateStore.open(home.networkStateSlot, home.partyId) }

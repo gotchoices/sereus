@@ -69,7 +69,7 @@ function nodeFor(machine: Machine): CadreNode {
 	const config = controlNodeConfig({
 		partyId: machine.partyId,
 		privateKey: machine.key,
-		storageProvider: machine.capture.provider,
+		storageProvider: machine.capture.open,
 		strandWatchMs: STRAND_WATCH_MS,
 		...(machine.listenAddrs ? { listenAddrs: machine.listenAddrs } : {}),
 	});

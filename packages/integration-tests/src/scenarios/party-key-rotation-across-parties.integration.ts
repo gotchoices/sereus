@@ -139,7 +139,7 @@ async function bringUpJoinedStrand(): Promise<JoinedStrand> {
 		tag: 'party-key-rotation-across-parties',
 		parties: [
 			{ name: 'a', machines: [{ membershipReconciliation: MEMBERSHIP_LOOP, reconcileMs: CONTROL_RECONCILE_MS }] },
-			{ name: 'b', machines: [{ membershipReconciliation: MEMBERSHIP_LOOP, storageProvider: b1Capture.provider }] },
+			{ name: 'b', machines: [{ membershipReconciliation: MEMBERSHIP_LOOP, storageProvider: b1Capture.open }] },
 		],
 	});
 	const a1Node = topology.machine('a').node;
@@ -148,7 +148,7 @@ async function bringUpJoinedStrand(): Promise<JoinedStrand> {
 
 	// ── Party A's members, each admitted the owner-online way ───────────────
 	const a2Member = await startMember(partyA.partyId, partyA.ownerPublicKey, {
-		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: a2Capture.provider,
+		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: a2Capture.open,
 		reconcileMs: CONTROL_RECONCILE_MS, membershipReconciliation: MEMBERSHIP_LOOP,
 	});
 	await admitMember(a1Node, a2Member, STRAND_GATE.timeoutMs);

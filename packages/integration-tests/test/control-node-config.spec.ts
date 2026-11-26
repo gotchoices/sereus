@@ -14,9 +14,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { MemoryBootstrapPeerStore } from '@serfab/cadre-core';
-import type { CadreNodeConfig, RawStorageProvider } from '@serfab/cadre-core';
+import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { controlNodeConfig, wsTransports, type ControlNodeOpts } from '../src/harness/node-fixtures.js';
 
 /**
@@ -29,16 +29,6 @@ function builtConfig(opts: ControlNodeOpts): Required<Pick<CadreNodeConfig, 'net
 	expect(config.network).toBeDefined();
 	expect(config.storage).toBeDefined();
 	return config as Required<Pick<CadreNodeConfig, 'network' | 'storage'>> & CadreNodeConfig;
-}
-
-/**
- * `RawStorageProvider` is either a per-scope factory OR a single store used for every
- * scope. Every config this builder produces uses the factory arm, so a test that wants to
- * see what a scope resolves to narrows here rather than at each call.
- */
-function storeForScope(provider: RawStorageProvider, scope: string) {
-	if (typeof provider !== 'function') throw new Error('expected a per-scope factory, got a bare store');
-	return provider(scope);
 }
 
 describe('controlNodeConfig', () => {
@@ -74,9 +64,8 @@ describe('controlNodeConfig', () => {
 			}
 		});
 
-		it('hands out a FRESH store per scope, so nothing leaks between two nodes', () => {
-			const provider = config.storage.provider;
-			expect(storeForScope(provider, 'scope-a')).not.toBe(storeForScope(provider, 'scope-b'));
+		it('opens FRESH storage per scope, so nothing leaks between two nodes', async () => {
+			expect(await config.storage.open('scope-a')).not.toBe(await config.storage.open('scope-b'));
 		});
 	});
 
@@ -114,11 +103,15 @@ describe('controlNodeConfig', () => {
 			expect(config.network.controlCohort).toEqual({ reconcileMs: 2_000 });
 		});
 
-		it('uses storageProvider verbatim, so a caller can pin ONE store across a restart', () => {
-			const store = new MemoryRawStorage();
-			const provider = builtConfig({ partyId: 'p', storageProvider: () => store }).storage.provider;
-			expect(storeForScope(provider, 'scope-a')).toBe(store);
-			expect(storeForScope(provider, 'scope-b')).toBe(store);
+		it('uses storageProvider verbatim, so a caller can pin the storage a restart reopens', async () => {
+			// Identity, not just behaviour: a builder that wrapped or re-memoized the opener
+			// would defeat a capture's whole point — handing a restarted node the storage the
+			// previous incarnation wrote to (`block-store-probe.ts`).
+			const storage = memoryNodeStorage();
+			const open = async (_scope: string) => storage;
+			const built = builtConfig({ partyId: 'p', storageProvider: open });
+			expect(built.storage.open).toBe(open);
+			expect(await built.storage.open('scope-a')).toBe(storage);
 		});
 
 		it('forwards pinnedOwnerKeys under trustedOwners', () => {
@@ -143,7 +136,7 @@ describe('controlNodeConfig', () => {
 	it('refuses storageProvider together with storageOpDelayMs instead of picking one', () => {
 		expect(() => controlNodeConfig({
 			partyId: 'p',
-			storageProvider: () => new MemoryRawStorage(),
+			storageProvider: async () => memoryNodeStorage(),
 			storageOpDelayMs: 5,
 		})).toThrow(/mutually exclusive/);
 	});

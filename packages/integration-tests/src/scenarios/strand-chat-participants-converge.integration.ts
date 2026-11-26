@@ -237,7 +237,7 @@ async function redeemOnJoiner(
 		partyId: `joiner-chat-${runTag}`,
 		privateKey: joinerKey,
 		bootstrapNodes: controlAddrs(side.host),
-		storageProvider: capture.provider,
+		storageProvider: capture.open,
 		// No membershipReconciliation override: the reconciler retries an unfinished join
 		// on its own short ladder (1 s, doubling, capped at its 30 s default), so a joiner
 		// finishes inside the wait budget on the production cadence.

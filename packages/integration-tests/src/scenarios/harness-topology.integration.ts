@@ -260,7 +260,7 @@ describe('Topology builder harness', () => {
 					{ name: 'alpha', machines: [{}, {}] },
 					// beta[1] is the machine the strand must never touch; its raw storage is
 					// captured so "no strand-scoped store" is a physical claim.
-					{ name: 'beta', machines: [{}, { storageProvider: leftOutCapture.provider }] },
+					{ name: 'beta', machines: [{}, { storageProvider: leftOutCapture.open }] },
 				],
 			});
 

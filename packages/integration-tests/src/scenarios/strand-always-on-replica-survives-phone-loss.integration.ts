@@ -134,7 +134,7 @@ async function startAlwaysOn(capture: RawStorageCapture): Promise<Owner & { disc
 	const key = await generateKeyPair('Ed25519');
 	const node = new CadreNode(controlNodeConfig({
 		partyId, privateKey: key, nodeClass: 'server', hostUnclaimedStrands: true,
-		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
+		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.open,
 	}));
 	const discovered = collectDiscovered(node);
 	await node.start();
@@ -161,7 +161,7 @@ async function enrollPhone(
 	await owner.node.authorizePeer(peerId);
 	const node = new CadreNode(controlNodeConfig({
 		partyId: owner.partyId, privateKey: key, nodeClass: 'device',
-		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.provider,
+		strandWatchMs: STRAND_WATCH_MS, storageProvider: capture.open,
 		pinnedOwnerKeys: [owner.publicKey],
 	}));
 	const discovered = collectDiscovered(node);

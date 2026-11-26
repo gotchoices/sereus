@@ -11,10 +11,10 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
 import {
 	CadreNode,
-	type CadreInvitation, type CadreJoinProgress, type RawStorageProvider,
+	type CadreInvitation, type CadreJoinProgress,
 	type RedeemCadreInvitationOptions, type RedeemCadreInvitationResult,
 } from '@serfab/cadre-core';
-import { controlNodeConfig, controlAddrs, hasOutboundTo } from './node-fixtures.js';
+import { controlNodeConfig, controlAddrs, hasOutboundTo, type NodeStorageOpener } from './node-fixtures.js';
 import type { TestOwnerKey } from './owner-key.js';
 import { waitUntil } from './wait-utils.js';
 
@@ -25,8 +25,8 @@ export interface PinningMemberOptions {
 	key?: PrivateKey;
 	/** The member's listen addresses; default one loopback WebSocket address on a free port. */
 	listenAddrs?: string[];
-	/** Lets a scenario look inside the member's raw stores. */
-	storageProvider?: RawStorageProvider;
+	/** Lets a scenario look inside the member's block stores. */
+	storageProvider?: NodeStorageOpener;
 	/**
 	 * Wire this owner key as the member's owner signer (`useOwnerSigner`) in place of the
 	 * listener-only seed service, for a machine an owner will make a second owner

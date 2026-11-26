@@ -61,12 +61,12 @@ function nodeOn(
 	capture: RawStorageCapture,
 	nodeClass: NodeClass,
 ): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.provider }));
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.open }));
 }
 
 /** The joiner's control store, from its capture — the store the restarted node reads. */
 function controlStore(capture: RawStorageCapture): IRawStorage {
-	// `control()`, not `provider(...)`: the control scope key carries the party id, and a
+	// `control()`, not `open(...)`: the control scope key carries the party id, and a
 	// hand-built key that missed would mint a FRESH EMPTY store here — which every
 	// coverage assertion below would then pass against, vacuously.
 	return capture.control();

@@ -60,7 +60,7 @@ describe('Two cadre members restarted together', () => {
 
 			// ── A admits M1 and M2; each learns the other's address record ──────────
 			for (const capture of captures) {
-				const member = await startPinningMember(partyId, ownerKey, { storageProvider: capture.provider });
+				const member = await startPinningMember(partyId, ownerKey, { storageProvider: capture.open });
 				members.push(member);
 				await admitMember(owner, member, STARTUP_MS);
 			}
@@ -86,7 +86,7 @@ describe('Two cadre members restarted together', () => {
 				return gate;
 			});
 			const restartShapes = members.map((member, i) => ({
-				key: member.key, listenAddrs: [sameListenAddr(member.node)], storageProvider: captures[i]!.provider, connectionGater: gates[i]!.gater,
+				key: member.key, listenAddrs: [sameListenAddr(member.node)], storageProvider: captures[i]!.open, connectionGater: gates[i]!.gater,
 			}));
 			await Promise.all(members.map((member) => member.node.stop()));
 			members = [];

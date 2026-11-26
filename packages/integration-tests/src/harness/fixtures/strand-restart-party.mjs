@@ -13,10 +13,14 @@
  *                 and (as the node's default `joinedStrands` store over its `keyStore`) the
  *                 strands joined from another party;
  *   - `node/`     `FileStrandNetworkStateStore` — each strand node's saved network state;
- *   - `storage/`  one `FileRawStorage` directory per storage scope, cadre-cli's layout;
- *   - `offline/`  with `offline: true` only, one `FileKVStore` per strand scope: the strand's
- *                 offline journal (`CadreNodeConfig.strandOffline`, every strand starting in
- *                 offline mode), closed after the node stops.
+ *   - `storage/`  one `fileNodeStorage` directory per storage scope, cadre-cli's layout: the
+ *                 scope's block store, key-value store and blob piece store together. With
+ *                 `offline: true` the strand's offline journal is that scope's key-value store
+ *                 too, not a store of its own — Optimystic declares the journal's key prefix in
+ *                 `NODE_KV_NAMESPACES` precisely so one store serves the node and the journal,
+ *                 and a journal elsewhere would keep its bytes outside the one location the node
+ *                 measures itself against. Each scope's storage is closed after the node stops,
+ *                 which is what flushes it for the next process over the same directory.
  *
  * The node config mirrors `harness/node-fixtures.ts` `controlNodeConfig`, which this plain
  * ESM script cannot import (it is TypeScript source).
@@ -29,7 +33,7 @@
 import { join } from 'node:path';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { FileKVStore, FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import {
 	CadreNode,
 	createOwnerKey,
@@ -49,18 +53,21 @@ const say = (msg) => console.log(`[restart-party ${label}] ${msg}`);
 
 const keyStore = new FileKeyStore(join(stateDir, 'keys'));
 /**
- * One journal per strand scope: every database build asks again, and a second store over the
- * directory would not see the first's unflushed writes.
+ * One storage per scope, memoized: cadre-core asks again for a scope whose runtime has stopped,
+ * and the strand's offline journal asks again on every database build. All of them must reach
+ * the same stores — a second `fileNodeStorage` over the directory would be a second holder of
+ * one set of stores, and a second holder is one more `close()` this script would have to make.
  */
-const journals = new Map();
-const journalFor = (scope) => {
-	let journal = journals.get(scope);
-	if (!journal) {
-		journal = new FileKVStore(join(stateDir, 'offline', scope));
-		journals.set(scope, journal);
+const storages = new Map();
+const storageFor = (scope) => {
+	let storage = storages.get(scope);
+	if (!storage) {
+		storage = fileNodeStorage(join(stateDir, 'storage', scope));
+		storages.set(scope, storage);
 	}
-	return journal;
+	return storage;
 };
+const journalFor = (scope) => storageFor(scope).kv;
 const node = new CadreNode({
 	controlNetwork: { partyId, bootstrapNodes: [] },
 	nodeClass,
@@ -68,7 +75,7 @@ const node = new CadreNode({
 	// Not a replica host: a server node here stands for "holds control blocks", and
 	// the scenario asserts which strands each party runs.
 	hostUnclaimedStrands: false,
-	storage: { provider: (scope) => new FileRawStorage(join(stateDir, 'storage', scope)) },
+	storage: { open: async (scope) => storageFor(scope) },
 	keyStore,
 	strandNetworkState: { store: await FileStrandNetworkStateStore.open(join(stateDir, 'node'), partyId) },
 	network: {
@@ -266,11 +273,12 @@ async function stopAndExit(code) {
 		console.error(`[restart-party ${label}] stop failed:`, error);
 		code = 1;
 	}
-	// After the node, whose strand databases journal into these until they close; even after a
-	// failed stop, so what the journals hold is flushed before the next process reads them.
-	const closed = await Promise.allSettled([...journals.values()].map((journal) => journal.close()));
+	// After the node, which writes to these until it stops (its strand databases journal into
+	// each scope's key-value store); even after a failed stop, so what they hold is flushed and
+	// their locks released before the next process over the same directories reads them.
+	const closed = await Promise.allSettled([...storages.values()].map((storage) => storage.close()));
 	for (const { reason } of closed.filter(({ status }) => status === 'rejected')) {
-		console.error(`[restart-party ${label}] journal close failed:`, reason);
+		console.error(`[restart-party ${label}] storage close failed:`, reason);
 		code = 1;
 	}
 	process.exit(code);

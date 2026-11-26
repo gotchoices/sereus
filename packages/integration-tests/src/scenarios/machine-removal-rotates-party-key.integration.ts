@@ -152,7 +152,7 @@ async function bringUpSharedStrand(): Promise<SharedStrand> {
 		tag: 'machine-removal-rotation',
 		parties: [
 			{ name: 'a', machines: [{ membershipReconciliation: MEMBERSHIP_LOOP, reconcileMs: CONTROL_RECONCILE_MS }] },
-			{ name: 'b', machines: [{ membershipReconciliation: MEMBERSHIP_LOOP, storageProvider: bCapture.provider }] },
+			{ name: 'b', machines: [{ membershipReconciliation: MEMBERSHIP_LOOP, storageProvider: bCapture.open }] },
 		],
 	});
 	const owner = topology.machine('a').node;
@@ -161,7 +161,7 @@ async function bringUpSharedStrand(): Promise<SharedStrand> {
 
 	// ── Party A's members, each admitted the owner-online way ───────────────
 	const a2Options = {
-		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: a2Capture.provider,
+		hostUnclaimedStrands: true, strandWatchMs: STRAND_WATCH_MS, storageProvider: a2Capture.open,
 		reconcileMs: CONTROL_RECONCILE_MS, membershipReconciliation: MEMBERSHIP_LOOP,
 	};
 	const a2Member = await startMember(party.partyId, party.ownerPublicKey, a2Options);

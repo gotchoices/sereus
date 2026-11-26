@@ -264,8 +264,8 @@ describe('Two parties × two machines, one strand across all four', () => {
 				genesis: 'genesis-first', // the default — the production seed-enrollment ordering
 				controlMesh: 'full',
 				parties: [
-					{ name: 'a', machines: [{ storageProvider: captures.a0.provider }, { storageProvider: captures.a1.provider }] },
-					{ name: 'b', machines: [{ storageProvider: captures.b0.provider }, { storageProvider: captures.b1.provider }] },
+					{ name: 'a', machines: [{ storageProvider: captures.a0.open }, { storageProvider: captures.a1.open }] },
+					{ name: 'b', machines: [{ storageProvider: captures.b0.open }, { storageProvider: captures.b1.open }] },
 				],
 			});
 			const a0 = topology.machine('a', 0);
@@ -393,7 +393,7 @@ describe('Two parties × two machines, one strand across all four', () => {
 				partyId: partyA.partyId,
 				privateKey: a1.key,
 				nodeClass: 'device',
-				storageProvider: captures.a1.provider,
+				storageProvider: captures.a1.open,
 				pinnedOwnerKeys: [partyA.ownerPublicKey],
 				bootstrapNodes: a0Addrs,
 			}));

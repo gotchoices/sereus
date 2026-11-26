@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { MemoryRawStorage, type IRawStorage } from '@optimystic/db-p2p';
+import { MemoryRawStorage, memoryNodeStorage, type IRawStorage } from '@optimystic/db-p2p';
 import { controlStorageScope } from '@serfab/cadre-core';
 import type { ActionId, BlockId, IBlock } from '@optimystic/db-core';
 
@@ -102,72 +102,72 @@ describe('captureRawStorage', () => {
 	// rather than spelling a literal — the same call the node under test makes.
 	const CONTROL = controlStorageScope('probe-party');
 
-	it('hands back the SAME store for a repeated scope', async () => {
-		// cadre-core asks the provider again whenever a strand runtime is rebuilt; a fresh
-		// store per call would silently drop the strand's blocks on resume.
+	it('hands back the SAME storage for a repeated scope', async () => {
+		// cadre-core opens a scope again whenever a strand runtime is rebuilt; fresh storage
+		// per call would silently drop the strand's blocks on resume.
 		const capture = captureRawStorage();
-		const first = capture.provider('strand-1');
-		expect(capture.provider('strand-1')).toBe(first);
-		expect(capture.provider(CONTROL)).not.toBe(first);
+		const first = await capture.open('strand-1');
+		expect(await capture.open('strand-1')).toBe(first);
+		expect(await capture.open(CONTROL)).not.toBe(first);
 	});
 
-	it('reports the scopes it was asked for, in ask order', () => {
+	it('reports the scopes it was asked for, in ask order', async () => {
 		const capture = captureRawStorage();
-		capture.provider(CONTROL);
-		capture.provider('strand-1');
+		await capture.open(CONTROL);
+		await capture.open('strand-1');
 		expect(capture.scopes()).toEqual([CONTROL, 'strand-1']);
 	});
 
-	it('finds the control store without being told the party id', () => {
+	it('finds the control block store without being told the party id', async () => {
 		// What every scenario uses instead of rebuilding the key: it must reach the store
 		// the node actually wrote to, and it must not mint a fresh empty one.
 		const capture = captureRawStorage();
-		const control = capture.provider(CONTROL);
-		capture.provider('strand-1');
-		expect(capture.control()).toBe(control);
+		const control = await capture.open(CONTROL);
+		await capture.open('strand-1');
+		expect(capture.control()).toBe(control.blocks);
 	});
 
-	it('throws rather than inventing a control store the node never asked for', () => {
+	it('throws rather than inventing a control store the node never asked for', async () => {
 		// A minted-on-demand empty store would pass every coverage assertion vacuously,
 		// which is the whole failure mode this module guards.
 		const capture = captureRawStorage();
-		capture.provider('strand-1');
+		await capture.open('strand-1');
 		expect(() => capture.control()).toThrow(BlockStoreProbeError);
 		expect(() => capture.control()).toThrow(/scopes seen so far: \[strand-1\]/);
 	});
 
-	it('refuses to pick a control store once the node has served two parties, and still serves its strands', () => {
+	it('refuses to pick a control store once the node has served two parties, and still serves its strands', async () => {
 		// An app's node that switches cadres asks for a second control scope over the same
 		// strand stores; answering with either party's store would compare the wrong blocks.
 		const capture = captureRawStorage();
-		capture.provider(CONTROL);
-		const strand = capture.provider('strand-1');
-		capture.provider(controlStorageScope('second-party'));
+		await capture.open(CONTROL);
+		const strand = await capture.open('strand-1');
+		await capture.open(controlStorageScope('second-party'));
 		expect(() => capture.control()).toThrow(/served 2 parties/);
-		expect(capture.forStrand('strand-1')).toBe(strand);
+		expect(capture.forStrand('strand-1')).toBe(strand.blocks);
 	});
 
-	it('refuses to serve a control scope as a strand', () => {
+	it('refuses to serve a control scope as a strand', async () => {
 		const capture = captureRawStorage();
-		capture.provider(CONTROL);
+		await capture.open(CONTROL);
 		expect(() => capture.forStrand(CONTROL)).toThrow(BlockStoreProbeError);
 	});
 
-	it('names the scopes it did see when asked for a strand it never made', () => {
+	it('names the scopes it did see when asked for a strand it never made', async () => {
 		const capture = captureRawStorage();
-		capture.provider(CONTROL);
+		await capture.open(CONTROL);
 		// A plain string matches as a substring — the encoded key can contain regex-special
 		// characters, so building a pattern out of it would be its own bug.
 		expect(() => capture.forStrand('strand-missing')).toThrow(`scopes seen so far: [${CONTROL}]`);
 	});
 
-	it('refuses a capture whose factory collapses every scope into one store', () => {
-		// A shared singleton would fold control blocks into every strand comparison — and
-		// two nodes sharing it would compare a store with itself.
-		const shared = new MemoryRawStorage();
+	it('refuses a capture whose factory collapses every scope into one block store', async () => {
+		// A factory ignoring its scope folds control blocks into every strand comparison — and
+		// two nodes sharing the capture would compare a store with itself.
+		const shared = memoryNodeStorage();
 		const capture = captureRawStorage(() => shared);
-		capture.provider(CONTROL);
-		capture.provider('strand-1');
+		await capture.open(CONTROL);
+		await capture.open('strand-1');
 		expect(() => capture.forStrand('strand-1')).toThrow(/SAME raw store/);
 	});
 });

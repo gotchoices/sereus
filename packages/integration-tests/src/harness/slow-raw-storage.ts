@@ -21,8 +21,8 @@
  * the inner storage without sleeping: it issues no operation of its own.
  */
 
-import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, FlushOptions, IRawStorage, NodeStorage, StoreDurability, StoredProofEntry } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
 function sleep(ms: number): Promise<void> {
@@ -139,6 +139,11 @@ export class SlowRawStorage implements IRawStorage {
 		return this.inner.promotePendingTransaction(blockId, actionId);
 	}
 
+	async deleteBlock(blockId: BlockId): Promise<void> {
+		await this.slow();
+		return this.inner.deleteBlock(blockId);
+	}
+
 	async flush(options?: FlushOptions): Promise<void> {
 		await this.slow();
 		return this.inner.flush(options);
@@ -166,7 +171,18 @@ export class SlowRawStorage implements IRawStorage {
 	}
 }
 
-/** A `StorageConfig.provider` over fresh {@link SlowRawStorage}-wrapped memory backends. */
-export function slowMemoryStorageProvider(opDelayMs: number): () => IRawStorage {
-	return () => new SlowRawStorage(new MemoryRawStorage(), opDelayMs);
+/**
+ * A `StorageConfig.open` over fresh memory backends whose BLOCK store alone is slowed.
+ *
+ * Only `blocks`, because the duration this buys is control-database bring-up, and bring-up is
+ * block reads and writes — the fixed count `control-start-storage-op-budget.spec.ts` pins.
+ * Wrapping the key-value and piece stores too would also stretch the clock's high-water mark,
+ * the blob records and the owed-blob ledger, which this option was never about: a scenario
+ * asking for a few milliseconds per block operation would silently pay for those as well.
+ */
+export function slowMemoryStorageProvider(opDelayMs: number): (scope: string) => Promise<NodeStorage> {
+	return async (_scope: string) => {
+		const storage = memoryNodeStorage();
+		return { ...storage, blocks: new SlowRawStorage(storage.blocks, opDelayMs) };
+	};
 }

@@ -87,7 +87,7 @@ describe('cadre-host joins a cadre by invitation (real cadre-host, real cadre-cl
       nodeClass: 'device',
       strandFilter: 'none',
       enableRelay: true,
-      storageProvider: captureA.provider,
+      storageProvider: captureA.open,
       bootstrapPeerStore: aPeerStore,
       ...(listenAddrs ? { listenAddrs } : {}),
     }));

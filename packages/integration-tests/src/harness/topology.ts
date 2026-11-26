@@ -31,9 +31,9 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '@serfab/cadre-core';
-import type { NodeClass, NodeRoles, RawStorageProvider, StrandReactivityConfig } from '@serfab/cadre-core';
+import type { NodeClass, NodeRoles, StrandReactivityConfig } from '@serfab/cadre-core';
 import {
-	controlNodeConfig, makeOwnOwner, connectControlNodes, hasOutboundTo, stopStartedNodes
+	controlNodeConfig, makeOwnOwner, connectControlNodes, hasOutboundTo, stopStartedNodes, type NodeStorageOpener
 } from './node-fixtures.js';
 import { signMessageEd25519 } from './owner-key.js';
 import type { TestOwnerKey } from './owner-key.js';
@@ -58,8 +58,8 @@ export interface TopologyMachineSpec {
 	nodeClass?: NodeClass;
 	/** Per-role overrides of the class's presets — see `ControlNodeOpts.roles` in `node-fixtures.ts`. */
 	roles?: Partial<NodeRoles>;
-	/** Per-machine raw-storage capture (block-store-probe scenarios). */
-	storageProvider?: RawStorageProvider;
+	/** Per-machine node-storage capture (block-store-probe scenarios). */
+	storageProvider?: NodeStorageOpener;
 	strandWatchMs?: number;
 	/** Suspend this machine's own closed-strand revoked-peer refreshes, so every cut it makes is
 	 *  one the scenario drove — see `ControlNodeOpts.revocationSuspended` in `node-fixtures.ts`. */

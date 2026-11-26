@@ -12,7 +12,7 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode, ed25519PublicKeyB64FromPeerId, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
@@ -23,8 +23,8 @@ import type {
   JoinedStrandStore,
   NodeClass,
   NodeRoles,
-  RawStorageProvider,
   SAppConfig,
+  StorageConfig,
   StrandNetworkStateStore,
   StrandOfflineConfig,
   StrandReactivityConfig,
@@ -55,6 +55,14 @@ export function createSignedSAppConfig(schema: string, version: string, schemaVe
   const signature = signSchema({ schema, version, schemaVersion }, authorPrivateKey);
   return { id: authorPublicKey, version, schemaVersion, schema, signature, latencyHint: 'interactive' as const };
 }
+
+/**
+ * `CadreNodeConfig.storage.open`'s own type, named so the three harness seams that forward one
+ * (`ControlNodeOpts`, `TopologyMachine`, `PinningMemberOptions`) read off the config rather than
+ * re-spelling the signature. Taken from `StorageConfig` so a change upstream lands here as a
+ * compile error instead of a copy that drifts.
+ */
+export type NodeStorageOpener = StorageConfig['open'];
 
 /** The revoked-peer gate's backstop under {@link ControlNodeOpts.revocationSuspended}: longer than any test. */
 const SUSPENDED_REVOCATION_BACKSTOP_MS = 3_600_000;
@@ -140,14 +148,14 @@ export interface ControlNodeOpts {
    */
   storageOpDelayMs?: number;
   /**
-   * Becomes `storage.provider` verbatim — for scenarios that must observe or keep
-   * the node's raw stores, e.g. a `captureRawStorage()` capture (`block-store-probe.ts`)
-   * or a store reused across a stop/restart cycle. Left unset the default
-   * `() => new MemoryRawStorage()` stands. Mutually exclusive with
-   * {@link storageOpDelayMs}: both answer "what storage does this node get", so
+   * Becomes `storage.open` verbatim — for scenarios that must observe or keep
+   * the node's stores, e.g. a `captureRawStorage()` capture's `open`
+   * (`block-store-probe.ts`) or storage reused across a stop/restart cycle. Left unset
+   * the default one fresh `memoryNodeStorage()` per scope stands. Mutually exclusive
+   * with {@link storageOpDelayMs}: both answer "what storage does this node get", so
    * `controlNodeConfig` throws rather than silently picking one.
    */
-  storageProvider?: RawStorageProvider;
+  storageProvider?: NodeStorageOpener;
   /** Override the control-cohort reconcile backstop (ms), which also caps the redial ladder. */
   reconcileMs?: number;
   /**
@@ -281,9 +289,9 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     strandFilter: { mode: opts.strandFilter ?? 'all' },
     hostUnclaimedStrands: opts.hostUnclaimedStrands ?? false,
     storage: {
-      provider: opts.storageProvider
+      open: opts.storageProvider
         ?? (opts.storageOpDelayMs === undefined
-          ? () => new MemoryRawStorage()
+          ? async () => memoryNodeStorage()
           : slowMemoryStorageProvider(opts.storageOpDelayMs))
     },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),

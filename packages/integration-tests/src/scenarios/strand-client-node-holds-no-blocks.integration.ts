@@ -16,8 +16,11 @@
  *      first sync — there is no local copy to fork), and its strand node declares itself a client.
  *   2. The client writes a participant and a message; a serving machine reads both.
  *   3. Both serving machines physically hold the strand's blocks (a raw-store coverage check in
- *      each direction, `block-store-probe.ts`), while the client's storage provider was never
- *      asked for the strand's scope — the client has no strand store at all.
+ *      each direction, `block-store-probe.ts`), while the client's BLOCK store for the same
+ *      strand holds not one block. The client is handed storage for the strand like any other
+ *      machine — it keeps its clock high-water mark, its blob records and owed-blob ledger, and
+ *      blob pieces whose only copy may be the one its own host put there — so the question is
+ *      not whether it was given somewhere to store blocks but whether it stored any.
  *   4. After that traffic, neither serving machine names the client in a cohort or picks it as a
  *      coordinator, and the client itself picks a serving machine.
  *   5. The client reads a message a serving machine wrote.
@@ -172,9 +175,9 @@ async function bootMachines(): Promise<{ topology: Topology } & Machines> {
 		parties: [{
 			name: PARTY,
 			machines: [
-				{ nodeClass: 'server', storageProvider: serverCaptures[0].provider },
-				{ nodeClass: 'server', storageProvider: serverCaptures[1].provider },
-				{ nodeClass: 'device', roles: { strandCohortMember: false }, storageProvider: clientCapture.provider },
+				{ nodeClass: 'server', storageProvider: serverCaptures[0].open },
+				{ nodeClass: 'server', storageProvider: serverCaptures[1].open },
+				{ nodeClass: 'device', roles: { strandCohortMember: false }, storageProvider: clientCapture.open },
 			],
 		}],
 	});
@@ -223,7 +226,7 @@ describe('A strand node that holds no blocks', () => {
 				"server 1 reads the client's message");
 			expect(seenOnServer).toEqual([{ Id: 'msg-client-1', ParticipantId: 'client' }]);
 
-			// ── 3. Both serving machines hold the blocks; the client has no strand store ──
+			// ── 3. Both serving machines hold the blocks; the client's block store is empty ──
 			const serverStores = [serverCaptures[0].forStrand(strandId), serverCaptures[1].forStrand(strandId)] as const;
 			const founderIndex = await readBlockIndex(serverStores[0]);
 			console.log(`[client-node] server 0's strand store holds ${founderIndex.size} committed blocks`);
@@ -234,8 +237,13 @@ describe('A strand node that holds no blocks', () => {
 			await awaitBlockCoverage(serverStores[1], serverStores[0], {
 				timeoutMs: CONVERGE_BUDGET_MS, description: "every block server 1 holds lands in server 0's store",
 			});
-			expect(clientCapture.scopes(), "the client's provider was asked for its control store only").not.toContain(strandId);
-			expect(() => clientCapture.forStrand(strandId)).toThrow(/no raw store was created/);
+			// The strand's scope IS opened for the client: a client keeps the strand's non-block
+			// records (`StorageConfig.open`). So the claim under test is the stronger one — it
+			// had somewhere to put blocks and put none there, while the two serving machines
+			// hold every block above.
+			expect(clientCapture.scopes(), "the client's storage was opened for the strand too").toContain(strandId);
+			const clientIndex = await readBlockIndex(clientCapture.forStrand(strandId));
+			expect([...clientIndex.keys()], 'the client stores none of the strand\'s blocks').toEqual([]);
 
 			// ── 4. After that traffic, no serving machine counts the client as serving ──
 			for (const [i, server] of serverNodes.entries()) {

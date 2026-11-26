@@ -399,7 +399,7 @@ async function startPartyNode(home: PartyHome, relay: DedicatedRelay): Promise<C
 		privateKey: home.key,
 		listenAddrs: [],
 		relayAddrs: [relay.dialAddr],
-		storageProvider: home.storage.provider,
+		storageProvider: home.storage.open,
 		joinedStrandStore: new KeyStoreJoinedStrandStore(home.joinedKeys, home.partyId),
 		strandNetworkStateStore: await PersistentStrandNetworkStateStore.open(home.networkStateSlot, home.partyId),
 	}));

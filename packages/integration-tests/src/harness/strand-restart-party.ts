@@ -7,9 +7,10 @@
  *
  * The child keeps everything a phone keeps on disk under `stateDir` — its identity key and
  * joined-strand records (`FileKeyStore`), its strand network state
- * (`FileStrandNetworkStateStore`), its raw stores (`FileRawStorage`) and, with `offline`, its
- * offline journals (`FileKVStore`) — so a child that exits and is respawned over the same
- * directory is a real restart: a new process, with no module state carried over.
+ * (`FileStrandNetworkStateStore`) and one `fileNodeStorage` per storage scope, which with
+ * `offline` holds the strand's offline journal in its key-value store too — so a child that
+ * exits and is respawned over the same directory is a real restart: a new process, with no
+ * module state carried over.
  *
  * The child imports the BUILT `@serfab/cadre-core`, which the suite's stale-build guard
  * (`test/global-setup.ts`) already holds fresh.
@@ -139,8 +140,8 @@ export interface StrandRestartPartyOptions {
 	nodeClass: NodeClass;
 	/**
 	 * Offer offline mode on the party's strands, every strand starting in it
-	 * (`CadreNodeConfig.strandOffline` with `initialMode: 'offline'`), each journaling into a
-	 * `FileKVStore` under `stateDir/offline/<strand id>`.
+	 * (`CadreNodeConfig.strandOffline` with `initialMode: 'offline'`), each journaling into the
+	 * key-value store of its own scope's node storage under `stateDir/storage/<strand id>`.
 	 */
 	offline?: boolean;
 }

@@ -69,7 +69,7 @@ function nodeOn(
 	nodeClass: NodeClass,
 	schemaPath: string,
 ): CadreNode {
-	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.provider, schemaPath }));
+	return new CadreNode(controlNodeConfig({ partyId, privateKey, nodeClass, storageProvider: capture.open, schemaPath }));
 }
 
 const controlDb = (node: CadreNode): ControlDatabase => {

@@ -23,13 +23,12 @@
  * - `fresh` — B has never attached. Raise the delay, then `addStrand`. The yardstick: the
  *   shape the constant's fresh-join band was taken on.
  * - `reattach-kept` — B attaches, reads a row, and `stopStrand`s. A writes while B is
- *   away. Raise the delay, then `addStrand` again over the SAME raw store (a
- *   `captureRawStorage` capture, which hands a strand scope the same store every time it
+ *   away. Raise the delay, then `addStrand` again over the SAME storage (a
+ *   `captureRawStorage` capture, which hands a strand scope the same storage every time it
  *   is asked — the shape of a phone with durable storage).
- * - `reattach-empty` — the same, but B's provider mints a fresh `MemoryRawStorage` per
- *   request (the harness default, and cadre's own when no provider is configured), so the
- *   re-attach starts from nothing: the shape of an app that keeps its strand store in
- *   memory.
+ * - `reattach-empty` — the same, but B's opener mints fresh in-memory storage per request
+ *   (the harness default), so the re-attach starts from nothing: the shape of an app that
+ *   keeps its strand store in memory.
  *
  * Each arm prints, relative to the `addStrand` call: when the launch returned, whether it
  * came up gated (`'syncing'`), when B's strand node first held a connection to A's, when
@@ -57,7 +56,7 @@ import { describe, it } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { Libp2p } from 'libp2p';
 import type { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	generateStrandMemberKey,
@@ -187,7 +186,7 @@ async function measureArm(label: string, arm: Arm): Promise<void> {
 		});
 
 		const bKey = await generateKeyPair('Ed25519');
-		const bStorage = arm === 'reattach-kept' ? captureRawStorage().provider : () => new MemoryRawStorage();
+		const bStorage = arm === 'reattach-kept' ? captureRawStorage().open : async () => memoryNodeStorage();
 		B = new CadreNode(withCohortReadDeadline(controlNodeConfig({
 			partyId: `reattach-b-${runTag}`, privateKey: bKey, enableRelay: false,
 			listenAddrs: [], relayAddrs: [relay.dialAddr], storageProvider: bStorage,

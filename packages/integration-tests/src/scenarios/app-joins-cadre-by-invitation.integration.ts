@@ -83,7 +83,7 @@ describe('E2E an app joins a cadre by invitation and by owner grant', () => {
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, nodeClass: 'device', strandFilter: 'none', listenAddrs: [] }));
 			await A.start();
 			const { publicKey: aOwnerKey } = await makeOwnOwner(A);
-			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.provider });
+			M = await startPinningMember(partyId, aOwnerKey, { storageProvider: captureM.open });
 			const mKey = M.key;
 			const mPeerId = M.peerId;
 			await admitMember(A, M, STARTUP_MS);
@@ -124,7 +124,7 @@ describe('E2E an app joins a cadre by invitation and by owner grant', () => {
 				timeoutMs: STARTUP_MS, intervalMs: 250, description: 'B reports a pass on which no member answered',
 			});
 			const waitingSince = Date.now();
-			M = await startPinningMember(partyId, aOwnerKey, { key: mKey, listenAddrs: [mListenAddr], storageProvider: captureM.provider });
+			M = await startPinningMember(partyId, aOwnerKey, { key: mKey, listenAddrs: [mListenAddr], storageProvider: captureM.open });
 			const restarted = M;
 			const { joined, passes } = await joining;
 			console.log('[targeted] B was admitted on pass %d, %d ms after M began restarting', passes, Date.now() - waitingSince);
