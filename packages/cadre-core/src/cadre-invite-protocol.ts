@@ -105,9 +105,10 @@ export interface CadreInvitation {
    */
   ownerKeys: string[];
   /**
-   * Multiaddrs ending in `/p2p/<peerId>`: the issuer's own first, then other members', at
-   * most `CADRE_INVITATION_MAX_ADDRS` in all (`selectCadreInvitationMembers` in
-   * `invitation-bootstrap.ts`). The device tries them in order.
+   * Multiaddrs ending in `/p2p/<peerId>` of the issuer and other members, the most reliably
+   * reachable machine first, at most `CADRE_INVITATION_MAX_ADDRS` in all
+   * (`selectCadreInvitationMembers` in `invitation-bootstrap.ts`). The device tries them in
+   * order.
    */
   members: string[];
 }

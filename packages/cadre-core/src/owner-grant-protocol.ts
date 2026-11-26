@@ -94,7 +94,7 @@ export interface OwnerGrantBundle {
    * invitation gives: the holder anchors whatever arrives here.
    */
   ownerKeys: string[];
-  /** As `CadreInvitation.members`: multiaddrs ending in `/p2p/<peerId>`, the issuer's first, at most six in all. */
+  /** As `CadreInvitation.members`: multiaddrs ending in `/p2p/<peerId>`, the machine most likely to answer first, at most six in all. */
   members: string[];
 }
 

@@ -103,8 +103,9 @@ describe('E2E cadre invitation redeemed at a member that never held the row', ()
 			// ── A mints; the row stays on A ─────────────────────────────────────────
 			const { invitation } = await A.createCadreInvitation();
 			const key = invitation.invite.key;
-			expect(invitation.members[0]).toBe(A.getMultiaddrs()[0]);
-			expect(invitation.members.some((addr) => addr.endsWith(`/p2p/${member.peerId}`))).toBe(true);
+			// M is server-class, so it leads; A, a device, follows with its one best address.
+			expect(invitation.members[0]!.endsWith(`/p2p/${member.peerId}`)).toBe(true);
+			expect(invitation.members.filter((addr) => addr.endsWith(`/p2p/${aPeerId}`))).toEqual([A.getMultiaddrs()[0]]);
 
 			// ── A stops and leaves M's cohort; M does not hold the row ──────────────
 			// M is asked only once A has left its cohort, so the read is not waiting on the

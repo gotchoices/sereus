@@ -108,7 +108,7 @@ An **owner grant** is an Ed25519 key pair, as a cadre invitation is ([How a row 
 
 - **The signed row**, exactly as issued. A member that has not yet received the row by replication seats it from the bundle under the issuer's stored signature. That signature covers every column, so an altered row cannot be seated anywhere.
 - **`ownerKeys`**, taken from the issuer's trusted-owner anchor and never from the replicated `OwnerKey` table, because the holder anchors whatever arrives here.
-- **`members`**, at most six member addresses with the issuer's first, chosen as a cadre invitation chooses them. The cap keeps the text inside one QR code. `reach` says where a holder could redeem once the issuing machine is gone, as it does for an invitation.
+- **`members`**, at most six member addresses, chosen and ordered as a cadre invitation's are ([The bundle](membership.md#the-bundle)). The cap keeps the text inside one QR code. `reach` says where a holder could redeem once the issuing machine is gone, as it does for an invitation.
 
 ### Minting, listing, withdrawing
 
