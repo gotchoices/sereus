@@ -57,7 +57,7 @@ import {
 import {
 	controlNodeConfig, createSignedSAppConfig, makeOwnOwner, createTestOwnerKey, waitUntil, captureRawStorage, sameListenAddr,
 	startPinningMember, admitMember, waitingForMember, readCohort, peerDialGate, readBlockIndex,
-	awaitBlockCoverage, stopStartedNodes,
+	awaitBlockCoverage, formatBlockCoverageGap, stopStartedNodes,
 	type InviteMember, type PeerDialGate, type RawStorageCapture, type TestOwnerKey,
 } from '../harness/index.js';
 
@@ -372,9 +372,27 @@ async function expectReplicaOnM(M: InviteMember, mStorage: RawStorageCapture, nS
 	const nBlocks = (await readBlockIndex(nStore)).size;
 	console.log('[strand-move] N holds %d committed blocks for %s', nBlocks, strandId);
 	expect(nBlocks).toBeGreaterThanOrEqual(BLOCK_FLOOR);
+	// Every change of gap shape, with its elapsed time, and the total — `docs/contributing/testing.md`
+	// → "Asserting a quantity that has to travel between machines", third bullet. Not decoration here:
+	// this wait is the one that times out under CPU contention, and the shapes tell a replica catching
+	// up slowly from one that is not catching up at all. It normally closes on the FIRST poll, so a run
+	// that logs one shape and never a second has a frozen gap, not a tight deadline
+	// (`always-on-replica-can-stay-a-revision-behind-a-commit-it-missed`).
+	const coverageStart = Date.now();
+	let lastShape = '';
+	let lastChangeMs = 0;
 	await awaitBlockCoverage(nStore, mStorage.forStrand(strandId), {
 		timeoutMs: STARTUP_MS, description: `every block N holds for ${strandId} lands in M's store`,
+		onGap: (gap) => {
+			const shape = formatBlockCoverageGap(gap);
+			if (shape === lastShape) return;
+			lastShape = shape;
+			lastChangeMs = Date.now() - coverageStart;
+			console.log('[strand-move] %s coverage gap at %d ms: %s', strandId, lastChangeMs, shape);
+		},
 	});
+	console.log('[strand-move] %s coverage closed in %d ms (last gap change at %d ms)',
+		strandId, Date.now() - coverageStart, lastChangeMs);
 	return strandPeerId(M.node, strandId);
 }
 
