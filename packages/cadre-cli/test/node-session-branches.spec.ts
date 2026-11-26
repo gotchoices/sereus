@@ -88,7 +88,7 @@ beforeEach(() => {
   fake.stopCalls = 0;
 
   // A real file, because `resolveConfig` is not mocked. Memory storage keeps it self-contained;
-  // nothing here ever constructs the storage provider anyway.
+  // the fake node never asks for a scope, so nothing here ever opens a store anyway.
   dir = mkdtempSync(join(tmpdir(), 'cadre-node-session-'));
   configPath = join(dir, 'cadre.json');
   writeFileSync(configPath, JSON.stringify({

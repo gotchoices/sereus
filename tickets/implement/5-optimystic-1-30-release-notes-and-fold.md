@@ -1,7 +1,7 @@
 description: Finish the storage upgrade: write the notes that tell app builders and operators what changed for them, and update the queued work items that this upgrade has already done part or all of.
 prereq: 3-optimystic-1-30-hosts-and-apps, 4-optimystic-1-30-integration-harness
 architecture: docs/cadre/node.md#storage
-files: .release-notes.pending.md, tickets/backlog/feat-strand-blobs-persist.md, tickets/backlog/feat-strand-offline-mode-nativescript.md, tickets/backlog/debt-shared-store-provider-never-exercised-end-to-end.md, tickets/backlog/later/5-quota-enforcement.md, docs/cadre/node.md
+files: .release-notes.pending.md, tickets/backlog/feat-strand-blobs-persist.md, tickets/backlog/feat-strand-offline-mode-nativescript.md, tickets/backlog/debt-shared-store-provider-never-exercised-end-to-end.md, tickets/backlog/later/5-quota-enforcement.md, tickets/backlog/later/3-mobile-resource-awareness.md, docs/cadre/node.md
 difficulty: easy
 ----
 
@@ -36,7 +36,7 @@ Read the issue first — `gh issue view 67` — so the answer addresses what was
 
 ## The queued work this upgrade changes
 
-Four backlog tickets. Each is rewritten in place or deleted; none is moved between folders (there is no `tickets/releases.md`, so `backlog/later/` is the human's to curate).
+Five backlog tickets. Each is rewritten in place or deleted; none is moved between folders (there is no `tickets/releases.md`, so `backlog/later/` is the human's to curate).
 
 **`feat-strand-blobs-persist` — rewrite down to what is left.** Its first bullet asked for a persistent piece store beside every platform's block store, and a persistent key-value store on strand nodes, naming `FilePieceStore`, `LevelDBPieceStore`, `IndexedDBPieceStore` and `SqlitePieceStore`. That is delivered: a `NodeStorage` has no part a platform can leave out, so every platform in this repository now passes all three, and the `NOTE:` in `peer-join-backfill.ts` that asked for the key-value store is answered. What remains, and is the whole of the rewritten ticket:
 
@@ -52,6 +52,8 @@ Keep its `architecture:` and `tradeoffs:` fields; rewrite `description:` and `fi
 **`debt-shared-store-provider-never-exercised-end-to-end` — delete.** Its subject is the single-`IRawStorage`-for-every-scope form of `storage.provider`, which ticket 2 removes: `OpenNodeStorage` carries a `close()` a shared instance would have closed once per scope, `levelDbNodeStorage` refuses a second call over one handle, and an embedder that wants sharing gets it from `fileNodeStorage`'s holder counting instead. The counting invariant the ticket was protecting now lives in upstream's `withReadCache` and is tested there. Delete the file; record in the `complete/` ticket that it went and why, so the reasoning is not lost with it.
 
 **`backlog/later/5-quota-enforcement` — rewrite to what is still missing.** Its premise ("storage-profile nodes should enforce capacity limits from `CadreNodeConfig.storage.quotaBytes`", blocked on Arachnode) is half answered: the allotment is wired and a full node refuses new data. Three of its four asks are not: per-strand usage accounting, reporting usage to the provider for billing, and a machine-wide rather than per-network budget. Rewrite it to those three, drop the "blocked on Arachnode" framing, and point at `docs/cadre/node.md`'s limits for what the allotment bounds today.
+
+**`backlog/later/3-mobile-resource-awareness` — one stale line, added by ticket 3's review.** Its scope note says "Storage quota on mobile is already covered by `storage.quotaBytes` in `CadreNodeConfig`", a field that no longer exists. Nothing else in that ticket is affected: the name is now `storage.allotmentBytes`, and on a phone it is the platform that declares it (`EdgeNodeStorage.allotmentBytes`, `DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES`), not the app's config — so the line should say that the figure exists and where it comes from, and keep its point that mobile defaults should be conservative. Do not otherwise rewrite the ticket.
 
 ## Edge cases and interactions
 
@@ -71,5 +73,6 @@ None. This ticket writes prose and edits the board.
 - Rewrite `feat-strand-blobs-persist` and `feat-strand-offline-mode-nativescript` down to their remaining work.
 - Delete `debt-shared-store-provider-never-exercised-end-to-end`.
 - Rewrite `backlog/later/5-quota-enforcement` to per-strand accounting, billing usage and a machine-wide budget.
+- Fix the one `storage.quotaBytes` line in `backlog/later/3-mobile-resource-awareness`.
 - Run `yarn typecheck`, `yarn build`, `yarn test` and `yarn lint` across the workspace; report what is green and what is not.
 - In the `complete/` ticket: the sereus#67 reply text ready for a human to post, the deleted ticket and why, and any figure the chain moved (the two storage budgets, and any timing a restart scenario reported).

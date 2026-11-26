@@ -30,7 +30,7 @@ createEdgeNode({
 });
 ```
 
-- **A key store and storage over IndexedDB.** `@optimystic/db-p2p-storage-web` provides the opener (`openOptimysticWebDb`), the one call that opens all of a scope's node storage over the handle it returns (`indexedDbNodeStorage`), and the key-value store the page's own node-local slots are built on (`IndexedDBKVStore`). The page adds the glue between them and the edge node ([Storage](#storage)).
+- **A key store and storage over IndexedDB.** `@optimystic/db-p2p-storage-web` provides the opener (`openOptimysticWebDb`), the one call that opens all of a scope's node storage over the handle it returns (`indexedDbNodeStorage`), and the durability probe the page's own node-local slots read (`supportsStrictDurability`). The page adds the glue between them and the edge node ([Storage](#storage)).
 - **Browser transports.** WebSockets and the circuit-relay transport, plus the two WebRTC transports if relayed connections should upgrade to direct ones ([Transport and reachability](#transport-and-reachability)). When `transports` is omitted the edge node uses WebSockets and circuit relay only.
 - **Relay addresses, if the tab is to be reachable.** The start option `relayAddrs` names the relays the node reserves on. How the page obtains the addresses is its own choice.
 - **Two polyfills, loaded before any other module,** and a handful of bundler aliases ([Bundling](#bundling)).

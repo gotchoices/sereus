@@ -72,7 +72,7 @@ A waiting message that no send attempt can have delivered offers **Discard**, wh
 
 The marks follow `CadreNode` events, not listeners on `strand.database.offline`, because a hibernation rebuilds the strand's database object and the node's events continue across that.
 
-Limits of the samples: a "Not yet delivered" mark is held in memory, so a message read from storage after a restart carries none; the NativeScript app has no offline-mode surface, although its platform now keeps the journal offline mode needs (ticket `feat-strand-offline-mode-nativescript`); and no app has a leave-strand action, so none handles `StrandQueueNotEmptyError`.
+Limits of the samples: a "Not yet delivered" mark is held in memory, so a message read from storage after a restart carries none; the NativeScript app has no offline-mode surface, although its platform keeps the journal offline mode needs (ticket `feat-strand-offline-mode-nativescript`); and no app has a leave-strand action, so none handles `StrandQueueNotEmptyError`.
 
 ### The queued-messages record
 

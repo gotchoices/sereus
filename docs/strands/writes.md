@@ -219,7 +219,7 @@ The other ways a strand goes away do not consult the queue:
 
 `CadreNodeConfig.strandOffline` offers the mode on a node's strands: `{ journal: (scope) => IKVStore | Promise<IKVStore>, initialMode?: 'online' | 'offline' }`.
 
-- **A journal is required.** cadre-core never builds a memory-only queue, because an acknowledgement that a process exit loses breaks the promise a local commit makes. `journal` is called once per database build with the strand id (its storage scope key). A throw or rejection fails the build, as a storage provider's does.
+- **A journal is required.** cadre-core never builds a memory-only queue, because an acknowledgement that a process exit loses breaks the promise a local commit makes. `journal` is called once per database build with the strand id (its storage scope key). A throw or rejection fails the build, as `storage.open`'s does.
 - **The embedder owns the store.** Every rebuild calls `journal` again, and nothing in cadre-core or Optimystic closes the store. Return the same store for the same scope and close it after the node stops.
 - **When `strandOffline` is absent, no strand database gets a queue,** and `setStrandOfflineMode` throws `StrandOfflineUnavailableError`.
 
