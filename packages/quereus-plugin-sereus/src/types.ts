@@ -1,6 +1,6 @@
 import type { Libp2p } from '@libp2p/interface';
 import type { ICohortReachability, IRepo } from '@optimystic/db-core';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import type { NodeStorage } from '@optimystic/db-p2p';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { AppSchemaOutdatedError } from './app-schema-errors.js';
 import type { VersionedAppSchema } from './app-schema.js';
@@ -77,15 +77,19 @@ export interface StrandConnectionBaseOptions {
 	 */
 	coordinatedRepo?: IRepo;
 	/**
-	 * Persistent raw storage. When provided:
-	 *  - it is passed to `createLibp2pNode` as `storage` so the libp2p data path uses it,
+	 * Every store this strand persists to, as one value: block revisions, the node-local records
+	 * (blob records and ledgers, the clock's high-water mark, the node's in-flight agreement state)
+	 * and the blob pieces. Open it in one call per platform — `fileNodeStorage(dir)`,
+	 * `indexedDbNodeStorage(handle)`, `levelDbNodeStorage(handle)`, `sqliteNodeStorage(handle)`,
+	 * or `memoryNodeStorage()` to mean memory. When provided:
+	 *  - it is passed to `createLibp2pNode` as `storage`, so the libp2p data path uses all three,
 	 *  - with `transactor: 'local'` it is also handed to the optimystic plugin as
-	 *    `rawStorageFactory: () => storage` so the local transactor persists DML
-	 *    on the same instance (avoids cache divergence between the two consumers).
+	 *    `storageFactory: () => storage` so the local transactor persists DML on the same stores.
 	 *
-	 * The plugin treats `storage` as borrowed — it is NOT closed on `shutdown()`.
+	 * The plugin treats `storage` as borrowed — it is NOT closed on `shutdown()`. Whoever opened it
+	 * closes it, after `shutdown()` returns.
 	 */
-	storage?: IRawStorage;
+	storage?: NodeStorage;
 	/**
 	 * Which Optimystic transactor writes and reads go through (default
 	 * `'network'`):

@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
+import type { OpenNodeStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '../../src/connect.js';
 import type { SereusPluginResult } from '../../src/types.js';
 
@@ -12,8 +13,8 @@ import type { SereusPluginResult } from '../../src/types.js';
  * End-to-end suite for the `Strand` membership/RBAC schema being applied to every
  * strand by the shared composition (`composeStrand`), alongside the sApp schema.
  *
- * These tests run on the `local` transactor (real libp2p node + real
- * FileRawStorage + the optimystic local transactor) so they exercise the real
+ * These tests run on the `local` transactor (real libp2p node + a real directory of file
+ * storage + the optimystic local transactor) so they exercise the real
  * apply/hydrate/DML path in-process, with no cohort and no peer round trips.
  * Membership-constraint parity on the network transactor — the one applications
  * run on — is `cadre-core`'s
@@ -67,6 +68,7 @@ describe('Strand membership schema (apply e2e)', () => {
 	let storageDir: string;
 	let db: Database | null = null;
 	let result: SereusPluginResult | null = null;
+	let storage: OpenNodeStorage | null = null;
 
 	beforeEach(async () => {
 		storageDir = path.join(os.tmpdir(), 'sereus-strand-schema-e2e', randomUUID());
@@ -90,12 +92,22 @@ describe('Strand membership schema (apply e2e)', () => {
 		} catch (err) {
 			console.error('db.close error in afterEach:', err);
 		}
+		// The opener closes: the connection closes no store it was handed, and the directory's write
+		// log and lock are released here so the removal below can take the directory away.
+		try {
+			if (storage) {
+				await storage.close();
+				storage = null;
+			}
+		} catch (err) {
+			console.error('storage.close error in afterEach:', err);
+		}
 		await fs.rm(storageDir, { recursive: true, force: true });
 	});
 
 	it('applies the Strand schema on a fresh strand and coexists with the sApp schema', async () => {
 		const strandId = randomUUID();
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
@@ -118,7 +130,7 @@ describe('Strand membership schema (apply e2e)', () => {
 
 	it('applies the Strand schema even when no sApp schema is supplied', async () => {
 		const strandId = randomUUID();
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		// No `schema` option: the Strand schema must still be applied unconditionally.
 		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
@@ -138,7 +150,7 @@ describe('Strand membership schema (apply e2e)', () => {
 
 		// Cold session: apply schema, insert a closed Header + founding Member, shut down.
 		{
-			const storage1 = new FileRawStorage(storageDir);
+			const storage1 = fileNodeStorage(storageDir);
 			const db1 = new Database();
 			const r1 = await connectToStrand(db1, { strandId, transactor: 'local', storage: storage1 });
 			try {
@@ -153,13 +165,17 @@ describe('Strand membership schema (apply e2e)', () => {
 			} finally {
 				await r1.shutdown();
 				db1.close();
+				// Closed here, so the warm session below opens a fresh set of stores over the directory
+				// rather than being handed this session's — `fileNodeStorage` shares one set per
+				// directory until its last holder closes.
+				await storage1.close();
 			}
 		}
 
-		// Warm session: fresh Database + FileRawStorage over the same dir/strandId.
-		const storage2 = new FileRawStorage(storageDir);
+		// Warm session: fresh Database + a fresh set of stores over the same dir/strandId.
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
-		result = await connectToStrand(db, { strandId, transactor: 'local', storage: storage2 });
+		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
 		// Hydrate actually ran on reopen and surfaced the persisted membership tables,
 		// so `apply schema Strand;` diffs against a primed catalog (no churn).
@@ -173,7 +189,7 @@ describe('Strand membership schema (apply e2e)', () => {
 
 	it('accepts the bootstrap founding Member and Manager in a closed strand', async () => {
 		const strandId = randomUUID();
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
@@ -201,7 +217,7 @@ describe('Strand membership schema (apply e2e)', () => {
 
 	it('rejects unauthorized membership writes in a closed strand (constraints active)', async () => {
 		const strandId = randomUUID();
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
@@ -266,7 +282,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		// optimystic-deferred-constraint-rejection-not-rolled-back).
 		{
 			const strandId = randomUUID();
-			const storage = new FileRawStorage(storageDir);
+			storage = fileNodeStorage(storageDir);
 			const dbOpen = new Database();
 			const rOpen = await connectToStrand(dbOpen, { strandId, transactor: 'local', storage });
 			try {
@@ -308,25 +324,30 @@ describe('Strand membership schema (apply e2e)', () => {
 		}
 
 		// Closed strand (fresh dir/strandId): the same first-Member insert now succeeds,
-		// proving Header.Type is what flips the OnlyClosed gate.
+		// proving Header.Type is what flips the OnlyClosed gate. Scoped like the open-strand block
+		// above, since its directory is removed here rather than by `afterEach`.
 		{
 			const closedDir = path.join(os.tmpdir(), 'sereus-strand-schema-e2e', randomUUID());
 			await fs.mkdir(closedDir, { recursive: true });
 			const strandId = randomUUID();
-			const storage = new FileRawStorage(closedDir);
-			db = new Database();
-			result = await connectToStrand(db, { strandId, transactor: 'local', storage });
-
-			await insertHeader(db, 'c');
-			await db.exec(
-				`insert into Strand.Member (Key, StampId)
-					with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-					values (?, ?)`,
-				['m1', 'stamp-m1'],
-			);
-			expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(1);
-
-			await fs.rm(closedDir, { recursive: true, force: true });
+			const closedStorage = fileNodeStorage(closedDir);
+			const dbClosed = new Database();
+			const rClosed = await connectToStrand(dbClosed, { strandId, transactor: 'local', storage: closedStorage });
+			try {
+				await insertHeader(dbClosed, 'c');
+				await dbClosed.exec(
+					`insert into Strand.Member (Key, StampId)
+						with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
+						values (?, ?)`,
+					['m1', 'stamp-m1'],
+				);
+				expect(await selectCount(dbClosed, 'select count(*) as c from Strand.Member')).toBe(1);
+			} finally {
+				await rClosed.shutdown();
+				dbClosed.close();
+				await closedStorage.close();
+				await fs.rm(closedDir, { recursive: true, force: true });
+			}
 		}
 	});
 });

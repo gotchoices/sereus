@@ -6,10 +6,10 @@ type FretProfile = NonNullable<StrandConnectionOptions['fretProfile']>;
 export interface ParsedPluginConfig {
 	options: StrandConnectionOptions;
 	/**
-	 * Node-only: resolved to a `FileRawStorage` by `plugin.ts`, rejected by
-	 * `plugin-browser.ts`. It travels beside the options rather than in them
-	 * because `StrandConnectionOptions.storage` is an `IRawStorage`, which no
-	 * `SqlValue` can carry.
+	 * Node-only: opened as the directory's whole node storage (blocks, node-local records and blob
+	 * pieces) with `fileNodeStorage` by `plugin.ts`, rejected by `plugin-browser.ts`. It travels
+	 * beside the options rather than in them because `StrandConnectionOptions.storage` is a
+	 * `NodeStorage`, which no `SqlValue` can carry.
 	 */
 	storagePath?: string;
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Database, type SqlValue } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type NodeStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '../../src/connect.js';
 import type { VersionedAppSchema } from '../../src/app-schema.js';
 import { AppSchemaOutdatedError, appSchemaRefusalOf } from '../../src/app-schema-errors.js';
@@ -25,7 +25,7 @@ async function selectAll(db: Database, sql: string): Promise<Array<Record<string
 }
 
 /** Connect as a member running `app`, run `use`, and shut down, so the next member opens the same store. */
-async function asMember(strandId: string, storage: MemoryRawStorage, app: VersionedAppSchema, use: (db: Database) => Promise<void>): Promise<void> {
+async function asMember(strandId: string, storage: NodeStorage, app: VersionedAppSchema, use: (db: Database) => Promise<void>): Promise<void> {
 	const db = new Database();
 	const result = await connectToStrand(db, { strandId, transactor: 'local', storage, ...app });
 	try {
@@ -39,7 +39,7 @@ async function asMember(strandId: string, storage: MemoryRawStorage, app: Versio
 describe('App schema version gate', () => {
 	it('refuses a member below the version the strand records, and applies nothing for it', async () => {
 		const strandId = randomUUID();
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 		await asMember(strandId, storage, { schema: V1, schemaVersion: 1 }, db => db.exec(`insert into App.T (Id, A) values (1, 'a')`));
 		await asMember(strandId, storage, { schema: V2, schemaVersion: 2 }, db => db.exec(`update App.T set B = 'b'`));
 

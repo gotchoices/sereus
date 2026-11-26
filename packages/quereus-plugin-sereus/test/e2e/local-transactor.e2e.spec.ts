@@ -4,14 +4,15 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
+import type { OpenNodeStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '../../src/connect.js';
 import type { SereusPluginResult } from '../../src/types.js';
 
 /**
  * End-to-end suite for the `local` transactor — a strand database running
- * entirely in this process, consulting no peers: real libp2p node + real
- * FileRawStorage + the real optimystic plugin's local transactor. No `vi.mock`
+ * entirely in this process, consulting no peers: real libp2p node + a real directory of file
+ * storage + the real optimystic plugin's local transactor. No `vi.mock`
  * calls — the sibling unit spec's `vi.mock('@optimystic/db-p2p', ...)` is scoped
  * to that file by Vitest, so this file inherits no fakes.
  *
@@ -23,6 +24,12 @@ import type { SereusPluginResult } from '../../src/types.js';
  *
  * Applications run on the default `network` transactor (covered by
  * `networked.e2e.spec.ts`); `local` is for in-process tests and tooling.
+ *
+ * Every session here closes the storage it opened, which is what makes a reopen below a real one:
+ * `fileNodeStorage` hands every holder of one directory the SAME three stores and drops them only
+ * when the last holder closes, so a session that left its storage open would hand the next one its
+ * own in-memory write groups and the persistence assertions would pass without anything having
+ * reached disk.
  */
 
 const TEST_SCHEMA = 'table Msg (Id integer primary key, Body text not null)';
@@ -31,6 +38,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 	let storageDir: string;
 	let db: Database | null = null;
 	let result: SereusPluginResult | null = null;
+	let storage: OpenNodeStorage | null = null;
 
 	beforeEach(async () => {
 		storageDir = path.join(os.tmpdir(), 'sereus-plugin-e2e', randomUUID());
@@ -54,12 +62,20 @@ describe('connectToStrand (local transactor e2e)', () => {
 		} catch (err) {
 			console.error('db.close error in afterEach:', err);
 		}
+		try {
+			if (storage) {
+				await storage.close();
+				storage = null;
+			}
+		} catch (err) {
+			console.error('storage.close error in afterEach:', err);
+		}
 		await fs.rm(storageDir, { recursive: true, force: true });
 	});
 
 	it('runs CRUD round-trip in a single local-transactor connection', async () => {
 		const strandId = randomUUID();
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
@@ -102,7 +118,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 
 		// First session: insert and shutdown.
 		{
-			const storage1 = new FileRawStorage(storageDir);
+			const storage1 = fileNodeStorage(storageDir);
 			const db1 = new Database();
 			const r1 = await connectToStrand(db1, {
 				strandId,
@@ -116,17 +132,18 @@ describe('connectToStrand (local transactor e2e)', () => {
 			} finally {
 				await r1.shutdown();
 				db1.close();
+				await storage1.close();
 			}
 		}
 
-		// Second session: fresh Database, fresh FileRawStorage over the same dir,
-		// same strandId. Schema apply should be a no-op (declarative-schema diff).
-		const storage2 = new FileRawStorage(storageDir);
+		// Second session: fresh Database, a fresh set of stores over the same dir, same strandId.
+		// Schema apply should be a no-op (declarative-schema diff).
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
 			transactor: 'local',
-			storage: storage2,
+			storage,
 			schema: TEST_SCHEMA,
 			schemaVersion: 1,
 		});
@@ -156,7 +173,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 		// First (cold) session: apply schema + insert, then shut down. Cold start
 		// has nothing persisted yet, so hydrate is a no-op.
 		{
-			const storage1 = new FileRawStorage(storageDir);
+			const storage1 = fileNodeStorage(storageDir);
 			const db1 = new Database();
 			const r1 = await connectToStrand(db1, {
 				strandId,
@@ -172,18 +189,19 @@ describe('connectToStrand (local transactor e2e)', () => {
 			} finally {
 				await r1.shutdown();
 				db1.close();
+				await storage1.close();
 			}
 		}
 
-		// Second (warm) session: fresh Database + FileRawStorage over the same dir,
-		// same strandId. Hydrate MUST prime the catalog from the persisted vtab
-		// schemas before `apply schema App;` so the declarative diff is a no-op.
-		const storage2 = new FileRawStorage(storageDir);
+		// Second (warm) session: fresh Database + a fresh set of stores over the same dir, same
+		// strandId. Hydrate MUST prime the catalog from the persisted vtab schemas before
+		// `apply schema App;` so the declarative diff is a no-op.
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
 			transactor: 'local',
-			storage: storage2,
+			storage,
 			schema: HYDRATE_SCHEMA,
 			schemaVersion: 1,
 		});
@@ -206,7 +224,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 
 	it('rejects queries against App.* when schema is omitted', async () => {
 		const strandId = randomUUID();
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
@@ -227,12 +245,12 @@ describe('connectToStrand (local transactor e2e)', () => {
 		// Three open/close cycles over the same storage dir, same strand. Catches
 		// leaks (file lock, libp2p socket) that only manifest on the second cycle.
 		for (let i = 0; i < 3; i++) {
-			const storage = new FileRawStorage(storageDir);
+			const cycleStorage = fileNodeStorage(storageDir);
 			const cycleDb = new Database();
 			const cycleResult = await connectToStrand(cycleDb, {
 				strandId,
 				transactor: 'local',
-				storage,
+				storage: cycleStorage,
 				schema: TEST_SCHEMA,
 				schemaVersion: 1,
 			});
@@ -245,6 +263,7 @@ describe('connectToStrand (local transactor e2e)', () => {
 			} finally {
 				await cycleResult.shutdown();
 				cycleDb.close();
+				await cycleStorage.close();
 			}
 		}
 	});

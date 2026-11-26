@@ -38,6 +38,7 @@ Errors:
 | `StrandQueueNotEmptyError` (`transactionIds`) | `forgetJoinedStrand`, `unpublishStrand` | The queue holds unsent transactions and `discardQueued` was not given. Nothing was left or removed. |
 | `StrandOfflineQueueBusyError` (`transactionIds`) | every closed-strand membership writer | The queue holds transactions. Nothing was written; await `offline.whenDrained()` and retry. |
 | `EntryNotDiscardableError`, `UnknownEntryError` | `StrandDatabase.offline.discard` | The transaction was sent or is being sent; or the queue does not hold it. |
+| `CohortOutOfSpaceError` (`peerIds`) | any write, outside offline mode | The machines that hold this write's blocks have no room left. Found with `cohortOutOfSpaceOf` from `@serfab/quereus-plugin-sereus`; see [A write the cohort has no room for](#a-write-the-cohort-has-no-room-for). |
 
 ## A commit's durability
 
@@ -89,6 +90,17 @@ In offline mode it is also `undefined` for a transaction that is still queued, a
 
 - A chat marks a message sent while alone as not yet delivered and clears the mark on `strand:commit-held`, as the reference apps do ([Messages not yet delivered](../platforms/reference-apps.md#messages-not-yet-delivered)).
 - A two-party app that needs the other party to receive a move keeps the phone awake, or warns before leaving, until `heldElsewhere` is true.
+
+## A write the cohort has no room for
+
+Every machine that stores a strand's data is given an allotment: how many bytes of that machine its operator lent the network. A machine that has used its allotment up refuses to store anything new. When every machine assigned a write's blocks is in that state, the write is refused for want of space, and the refusal says so rather than looking like any other failure.
+
+What an app sees depends on whether the strand is in offline mode.
+
+- **Outside offline mode the write throws, once.** It is not retried, because nothing about it is wrong: reading again and writing again would send the same bytes to the same full machines. The error is Optimystic's `CohortOutOfSpaceError`, which names the full machines by strand peer id in `peerIds`. Optimystic gives it no SQL error of its own, so an app that catches a failed write finds it with `cohortOutOfSpaceOf(error)` (from `@serfab/quereus-plugin-sereus`), which walks the wrapping errors Quereus and the Optimystic plugin add. Nothing was saved anywhere.
+- **In offline mode nothing throws.** The commit already resolved when it was saved on this machine, and the entry stays `queued` with `waitingFor: 'cohort'`, the refusal as its `lastError`, retried on the queue's usual backoff. It does not count as a failure the queue could not classify, so a strand whose members are full does not look like a strand whose members are broken.
+
+What clears it is on the machines, not in the app: their operators giving them more space, or those machines handing ranges to peers with room, which a machine short of space does on its own. An app can show the operator which machines are full, which is what `peerIds` is for.
 
 ## Offline mode
 
@@ -258,4 +270,5 @@ The edge node (`@serfab/cadre-core/edge-node`, which `@serfab/cadre-rn/phone-nod
 - **The network-commit wait is the plugin's five-minute default.** Nothing has been measured that would justify another value.
 - **Offline mode is unavailable on NativeScript** (ticket `feat-strand-offline-mode-nativescript`). The other places it is not offered are deliberate ([Turning it on](#turning-it-on)).
 - **Deleting the journal's records on a leave without asking was rejected.** Dropping transactions the user was told were saved must be the user's explicit choice, which is also why the default is to refuse.
+- **The reference apps show the refusal's message and nothing more.** They already surface a failed write's message, and this message names the machines that are full, which is the useful thing to put in front of a user; a dedicated screen for it was not built. Revisit if a deployment reports users who cannot act on the message.
 - **The queue is not held for a current app schema version.** A member offline on an older schema keeps queuing, and its queue can drain before it learns of a newer version ([A running member stops](app-schema.md#a-running-member-stops)).

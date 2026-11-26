@@ -27,8 +27,13 @@ export default async function register(
 	// The dynamic import keeps `@optimystic/db-p2p-storage-fs` (and its `node:fs`
 	// dependency) out of the browser/RN module graph.
 	if (storagePath) {
-		const { FileRawStorage } = await import('@optimystic/db-p2p-storage-fs');
-		options.storage = new FileRawStorage(storagePath);
+		// NOTE: nothing here closes this storage — the handle outlives `plugin.dispose()` and belongs
+		// to the host, which is already the rule for `storage_path` (the plugin has never owned what a
+		// setting named). `fileNodeStorage` hands back one set of stores per directory per process,
+		// counted by holder, so two `register()` calls over one path share them and they close when
+		// the last holder closes; since this one never closes, they live as long as the process.
+		const { fileNodeStorage } = await import('@optimystic/db-p2p-storage-fs');
+		options.storage = fileNodeStorage(storagePath);
 	}
 
 	return connectToStrand(db, options);

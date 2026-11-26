@@ -2,6 +2,7 @@ export { connectToStrand } from './connect.js';
 export { offlineControllerOf } from './offline-controllers.js';
 export { applyAppSchema, checkAppSchema, type VersionedAppSchema } from './app-schema.js';
 export { AppSchemaRefusedError, AppSchemaOutdatedError, appSchemaRefusalOf } from './app-schema-errors.js';
+export { cohortOutOfSpaceOf } from './write-errors.js';
 export { createEmptyCollections, type CollectionRegistrySource } from './empty-collections.js';
 export {
 	MIN_CLUSTER_SIZE,

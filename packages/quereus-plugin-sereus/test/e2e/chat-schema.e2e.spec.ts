@@ -4,7 +4,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Database, type SqlValue } from '@quereus/quereus';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
+import type { OpenNodeStorage } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { connectToStrand } from '../../src/connect.js';
 import type { SereusPluginResult } from '../../src/types.js';
@@ -40,7 +41,7 @@ import { extractDeclareSchemaBody } from '../../../../test-harness/qsql-body.js'
  * only definition of the field framing, and a JS re-implementation would drift
  * from it silently.
  *
- * Runs on the `local` transactor (real libp2p node + real FileRawStorage + the
+ * Runs on the `local` transactor (real libp2p node + a real directory of file storage + the
  * optimystic local transactor) so it exercises the real apply/DML path in-process,
  * with no cohort and no peer round trips — the same shape as
  * `strand-schema.e2e.spec.ts`.
@@ -309,6 +310,7 @@ describe('Chat reference schemas (write-through e2e)', () => {
 	let storageDir: string;
 	let db: Database | null = null;
 	let result: SereusPluginResult | null = null;
+	let storage: OpenNodeStorage | null = null;
 
 	beforeEach(async () => {
 		storageDir = path.join(os.tmpdir(), 'sereus-chat-schema-e2e', randomUUID());
@@ -332,12 +334,22 @@ describe('Chat reference schemas (write-through e2e)', () => {
 		} catch (err) {
 			console.error('db.close error in afterEach:', err);
 		}
+		// The opener closes: the connection closes no store it was handed, and the directory's write
+		// log and lock are released here so the removal below can take the directory away.
+		try {
+			if (storage) {
+				await storage.close();
+				storage = null;
+			}
+		} catch (err) {
+			console.error('storage.close error in afterEach:', err);
+		}
 		await fs.rm(storageDir, { recursive: true, force: true });
 	});
 
 	/** Open a strand whose sApp schema is the given `.qsql` body. */
 	async function connectWithSchema(schema: string): Promise<Database> {
-		const storage = new FileRawStorage(storageDir);
+		storage = fileNodeStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId: randomUUID(),

@@ -2,15 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
-import { MemoryRawStorage, defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type NodeStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { readFileSync } from 'node:fs';
 import { parseConfig } from '../src/plugin.js';
 import { PLUGIN_SETTING_KEYS } from '../src/parse-config.js';
 import { connectToStrand } from '../src/connect.js';
-import { composeStrand } from '../src/compose-strand.js';
 import { applyAppSchema } from '../src/app-schema.js';
-import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
 	COHORT_READ_DEADLINE_MS,
 	CONTROL_CLUSTER_POLICY,
@@ -475,94 +473,44 @@ describe('connectToStrand', () => {
 		expect(createLibp2pNode).not.toHaveBeenCalled();
 	});
 
-	it('releases the storage cache it wrapped, so a relaunch over the same backing store connects', async () => {
-		// `wrapStorageWithCache` claims the BACKING store in the shared cache pool (two
-		// write-through caches over one backend never converge, so upstream refuses the
-		// second). The claim is freed on dispose — and when this composition did the
-		// wrapping, its `shutdown` is the only thing holding that release. Two DISTINCT
-		// instances naming one identity is the shape that matters: it is what a relaunch
-		// over one directory (a fresh `FileRawStorage` on the same path) actually looks
-		// like, and the per-instance wrap memo cannot paper over it.
-		const makeStorage = () => ({
-			getStoreIdentity: () => 'test://relaunch-store',
-		}) as unknown as IRawStorage;
-
-		const first = await connectToStrand(db, {
-			strandId: 'test-strand-relaunch',
-			transactor: 'test',
-			storage: makeStorage(),
-		});
-		await first.shutdown();
-
-		const second = await connectToStrand(db, {
-			strandId: 'test-strand-relaunch',
-			transactor: 'test',
-			storage: makeStorage(),
-		});
-		await second.shutdown();
-	});
-
-	it('leaves the shared cache pool flat over repeated connect/shutdown cycles', async () => {
-		// `shutdown()` releases this composition's own claim on the storage cache — the
-		// leak this closes is one abandoned pool registration per connect, in a process
-		// meant to run for weeks. `wrapStorageWithCache` counts holders, so the release
-		// needs no ownership guess and is safe to make unconditionally.
-		const storage = { getStoreIdentity: () => 'test://cycle-store' } as unknown as IRawStorage;
-		const before = defaultCachePool().stats().stores.length;
-
-		for (let cycle = 0; cycle < 3; cycle++) {
-			const result = await connectToStrand(db, {
-				strandId: 'test-strand-cycles',
-				transactor: 'test',
-				storage,
-			});
-			expect(defaultCachePool().stats().stores.length).toBe(before + 1);
-
-			await result.shutdown();
-
-			expect(defaultCachePool().stats().stores.length).toBe(before);
-		}
-	});
-
-	it('does not retire a cache another scope wrapped and still holds', async () => {
-		// cadre-core wraps the store at its own seam and passes the WRAPPER down here,
-		// where it comes back unchanged. `shutdown()` releasing unconditionally must
-		// therefore release only THIS composition's claim: the strand runtime stopping
-		// cannot be allowed to empty the cache the control database reads through.
-		const inner = { getStoreIdentity: () => 'test://held-elsewhere' } as unknown as IRawStorage;
-		const before = defaultCachePool().stats().stores.length;
-		const heldElsewhere = wrapStorageWithCache(inner, 'held-elsewhere');
-		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+	it('writes through the storage it was handed, which is the only check on the config key name', async () => {
+		// `storageFactory` is read by name out of a `Record<string, unknown>` upstream: a name it
+		// does not know is ignored without a word, and the `local` transactor then builds its own
+		// `MemoryRawStorage` and quietly keeps every write in memory. No compiler error, no runtime
+		// error, nothing but data that disappears at restart — so this writes a row and proves it
+		// reached the stores this connection was given. `createLibp2pNode` is mocked in this file and
+		// ignores the storage, so the plugin config is the only consumer of it here.
+		const opened = memoryNodeStorage();
+		const writes: string[] = [];
+		const storage: NodeStorage = {
+			...opened,
+			blocks: new Proxy(opened.blocks, {
+				get(target, key, receiver) {
+					const value: unknown = Reflect.get(target, key, receiver);
+					if (typeof value !== 'function') return value;
+					const name = String(key);
+					return (...args: unknown[]) => {
+						if (name.startsWith('save') || name.startsWith('promote')) writes.push(name);
+						return (value as (...a: unknown[]) => unknown).apply(target, args);
+					};
+				},
+			}),
+		};
 
 		const result = await connectToStrand(db, {
-			strandId: 'test-strand-held-elsewhere',
-			transactor: 'test',
-			storage: heldElsewhere,
+			strandId: 'test-strand-storage-factory',
+			transactor: 'local',
+			storage,
+			schema: 'table Note (Id integer primary key, Body text not null)',
+			schemaVersion: 1,
 		});
-		await result.shutdown();
+		try {
+			await db.exec(`insert into App.Note (Id, Body) values (1, 'stored')`);
+		} finally {
+			await result.shutdown();
+		}
 
-		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
-
-		await disposeStorageCache(heldElsewhere);
-		expect(defaultCachePool().stats().stores.length).toBe(before);
-	});
-
-	it('releases the claim it took when plugin registration fails before setup starts', async () => {
-		// The wrap happens before ANY registration, so the window between it and the
-		// composition's own teardown is not empty: a crypto or optimystic registration
-		// that throws would otherwise leave the claim — and the backing store's pool
-		// registration — held for the process lifetime, with no holder able to release it.
-		const storage = { getStoreIdentity: () => 'test://registration-failure' } as unknown as IRawStorage;
-		const before = defaultCachePool().stats().stores.length;
-
-		await expect(composeStrand(db, { strandId: 'test-strand-reg-fail', transactor: 'test', storage }, {
-			registerCrypto() {
-				throw new Error('crypto registration exploded');
-			},
-			createNode: () => Promise.reject(new Error('never reached')),
-		})).rejects.toThrow('crypto registration exploded');
-
-		expect(defaultCachePool().stats().stores.length).toBe(before);
+		expect(writes).not.toEqual([]);
 	});
 
 	it('should stop created node on shutdown', async () => {
@@ -632,10 +580,10 @@ describe('an sApp table named like a strand table', () => {
 	}
 
 	it('keeps its rows apart from the strand table, and across a warm restart', async () => {
-		// One storage instance across both sessions: the second compose hydrates the catalog
-		// the first persisted. A MemoryRawStorage carries no store identity, so it passes
-		// through the storage-cache wrap unwrapped and the reopen is not refused.
-		const storage = new MemoryRawStorage();
+		// One storage value across both sessions: the second compose hydrates the catalog the
+		// first persisted. `memoryNodeStorage` is a fresh set of stores per call, so it is opened
+		// once and shared rather than opened per session.
+		const storage = memoryNodeStorage();
 		const options = { strandId: 'test-strand-same-name', transactor: 'local' as const, storage, schema: APP_SCHEMA, schemaVersion: 1 };
 
 		const cold = new Database();

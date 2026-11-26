@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type NodeStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '../../src/connect.js';
 
 /**
@@ -17,7 +17,7 @@ const SCHEMA = `
 	index PostByAuthor on Post (Author);
 `;
 
-async function connect(strandId: string, storage: MemoryRawStorage): Promise<{ db: Database; result: Awaited<ReturnType<typeof connectToStrand>> }> {
+async function connect(strandId: string, storage: NodeStorage): Promise<{ db: Database; result: Awaited<ReturnType<typeof connectToStrand>> }> {
 	const db = new Database();
 	const result = await connectToStrand(db, { strandId, transactor: 'local', storage, schema: SCHEMA, schemaVersion: 1 });
 	return { db, result };
@@ -26,7 +26,7 @@ async function connect(strandId: string, storage: MemoryRawStorage): Promise<{ d
 describe('createEmptyCollections', () => {
 	it('commits every declared table\'s collections once, so a reopen finds none to create', async () => {
 		const strandId = randomUUID();
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 
 		const founding = await connect(strandId, storage);
 		try {

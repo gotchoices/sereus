@@ -14,23 +14,24 @@ The `Database` passed to this package must come from the same `@quereus/quereus`
 
 ## First run
 
-This Node script opens a strand in one process, writes two rows and reads them back. It is adapted from `test/e2e/local-transactor.e2e.spec.ts`. It imports `FileRawStorage` from `@optimystic/db-p2p-storage-fs`, which this package depends on; add that package to your own dependencies if your package manager does not expose transitive ones.
+This Node script opens a strand in one process, writes two rows and reads them back. It is adapted from `test/e2e/local-transactor.e2e.spec.ts`. It imports `fileNodeStorage` from `@optimystic/db-p2p-storage-fs`, which this package depends on; add that package to your own dependencies if your package manager does not expose transitive ones.
 
 ```typescript
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { Database } from '@quereus/quereus';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 
 const dir = './data/my-strand';
 await mkdir(dir, { recursive: true });
 
 const db = new Database();
+const storage = fileNodeStorage(dir);
 const strand = await connectToStrand(db, {
 	strandId: randomUUID(),
 	transactor: 'local',
-	storage: new FileRawStorage(dir),
+	storage,
 	schema: 'table Msg (Id integer primary key, Body text not null)',
 	schemaVersion: 1,
 });
@@ -42,9 +43,10 @@ for await (const row of db.eval('select count(*) as c from App.Msg')) {
 
 await db.close();
 await strand.shutdown();
+await storage.close();
 ```
 
-The script uses the `local` transactor so that it needs no other node. An application leaves `transactor` unset. Close the `Database` before calling `shutdown()`, so no write can begin on a released connection.
+The script uses the `local` transactor so that it needs no other node. An application leaves `transactor` unset. Close the `Database` before calling `shutdown()`, so no write can begin on a released connection, and close the storage last: the connection closes no store it was handed.
 
 How to write the `schema` text is in the [schema guide](https://github.com/gotchoices/sereus/blob/master/docs/schema-guide.md).
 
@@ -56,7 +58,7 @@ How to write the `schema` text is in the [schema guide](https://github.com/gotch
 | `@serfab/quereus-plugin-sereus/plugin` | Node | Default export: a plugin registration function that takes settings as SQL values. A bundler that honours the `browser` condition gets the browser bundle instead. |
 | `@serfab/quereus-plugin-sereus/plugin-browser` | Browser or worker | The same registration function as one bundled ESM file (`dist/plugin-browser.js`, with a source map beside it). It imports `@quereus/quereus` by bare specifier, which the host must resolve. |
 
-The Node entries create a TCP libp2p node and keep blocks in memory unless given storage. The browser entry dials WebSockets and circuit relays only, and stores blocks in IndexedDB.
+The Node entries create a TCP libp2p node and keep everything in memory unless given storage. The browser entry dials WebSockets and circuit relays only, and stores in IndexedDB.
 
 ## `connectToStrand(db, options)`
 
@@ -68,7 +70,7 @@ Resolves to a [connection result](#the-connection-result). The options type is `
 | `schema`, `schemaVersion` | none | The app schema body and its version, given together or not at all. Without them the connection serves the `Strand` tables only. |
 | `bootstrapNodes` | `[]` | Multiaddrs of nodes that already serve the strand. |
 | `transactor` | `'network'` | Which Optimystic transactor commits go through. See [`transactor` values](#transactor-values). |
-| `storage` | none | An `IRawStorage` that persists the strand's blocks. Borrowed: `shutdown()` does not close it. |
+| `storage` | none | A `NodeStorage` — the strand's blocks, its node-local records and its blob pieces, opened in one call (`fileNodeStorage`, `indexedDbNodeStorage`, `levelDbNodeStorage`, `sqliteNodeStorage`, or `memoryNodeStorage` to mean memory). Borrowed: `shutdown()` does not close it. |
 | `clusterSize` | `4` | Nodes the strand's replication cluster should have: an integer of at least 2. See [`clusterSize`](#clustersize). |
 | `libp2pNode` | none | An existing strand node. The connection uses it and leaves it running on `shutdown()`. `port`, `bootstrapNodes`, `fretProfile` and `clusterSize` are then unused. |
 | `coordinatedRepo` | none | The injected node's handle for coordinating writes to the blocks it holds. Required with a node that serves blocks, and refused with a client node (`servesBlocks: false`), which holds none and so reads and writes through the strand's serving machines. |
@@ -126,6 +128,8 @@ An app table may share its name with one of the strand's own tables; the two are
 
 The `offline` option is that plugin's `offline` block without `journalLabel`, which this package derives from the strand id: [Offline mode](https://github.com/gotchoices/optimystic/blob/main/packages/quereus-plugin-optimystic/README.md#offline-mode--pluginoffline). With it, the result's `offline` is the queue's controller, and `offlineControllerOf(db)` finds the same controller from the `Database`. The queue's status, state and error types are re-exported here. Without a `journal` the queue lives in memory, except in the browser entry, which journals into the strand's IndexedDB database. The `Strand` tables are always acknowledged by the network, queue or not.
 
+`cohortOutOfSpaceOf(error)` finds a `CohortOutOfSpaceError` through wrapping errors: the machines that hold this write's blocks have no room left, so it was refused without being retried. Nothing is wrong with the write, so re-reading and writing again sends the same bytes to the same full machines; the error names them in `peerIds`. Optimystic gives this no SQL error of its own, so without this call an app cannot tell it apart from contention or an unreachable cohort.
+
 What these mean for an app is in [Writing to a strand: durability and offline mode](https://github.com/gotchoices/sereus/blob/master/docs/strands/writes.md).
 
 ## Founding a strand: `createEmptyCollections`
@@ -164,7 +168,7 @@ Quereus's `registerPlugin(db, sereusPlugin, settings)` also works, but it return
 | `schema` | none | The app schema body |
 | `schema_version` | none | A whole number of at least 1. Required with `schema` and refused without it |
 | `transactor` | `'network'` | `'network'`, `'local'` or `'test'` |
-| `storage_path` | none | Node entry only: a directory for a `FileRawStorage`. The browser entry rejects it |
+| `storage_path` | none | Node entry only: a directory the strand's storage is opened over. The browser entry rejects it |
 | `port` | `0` | An integer from 0 to 65535 |
 | `enable_cache` | `true` | `true`, `false`, `1` or `0` |
 | `fret_profile` | `'edge'` | `'edge'` or `'core'` |
@@ -200,8 +204,8 @@ The browser entry is for a host that resolves `@quereus/quereus` itself, such as
 
 ## What it writes
 
-- **Node, `storage` or `storage_path` given:** the strand's blocks, in that storage. Without either, blocks live in memory and are lost when the process exits.
-- **Browser entry:** an IndexedDB database named `sereus-strand-<strandId>`, holding the strand's blocks and, with `offline` on and no `journal` given, the offline queue's journal. `shutdown()` does not close or delete it.
+- **Node, `storage` or `storage_path` given:** the strand's blocks, the node-local records (blob records, the ledgers, the clock's high-water mark, the node's in-flight agreement state) and the blob pieces, all in that storage — one directory for `storage_path`. Nothing here closes it: whoever opened it closes it after `shutdown()` returns. Without either, all of it lives in memory and is lost when the process exits.
+- **Browser entry:** an IndexedDB database named `sereus-strand-<strandId>`, holding all three of those and, with `offline` on and no `journal` given, the offline queue's journal in the same key-value store the node writes its own records to. `shutdown()` does not close or delete it.
 
 Set `DEBUG=sereus:plugin:*` for the connection's log.
 
@@ -214,7 +218,7 @@ Set `DEBUG=sereus:plugin:*` for the connection's log.
 ```bash
 yarn build      # tsc, then esbuild writes dist/plugin-browser.js
 yarn test       # unit and e2e projects
-yarn test:e2e   # e2e project only: real libp2p and FileRawStorage
+yarn test:e2e   # e2e project only: real libp2p and real file storage
 yarn dev:test   # watch mode
 yarn typecheck
 ```

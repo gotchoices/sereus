@@ -4,8 +4,8 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
-import { createLibp2pNode } from '@optimystic/db-p2p';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
+import { createLibp2pNode, type OpenNodeStorage } from '@optimystic/db-p2p';
 import type { Libp2p } from '@libp2p/interface';
 import { connectToStrand } from '../../src/connect.js';
 import { DEFAULT_STRAND_CLUSTER_SIZE, STRAND_CLUSTER_POLICY } from '../../src/cluster-size.js';
@@ -15,8 +15,8 @@ import type { SereusPluginResult, Libp2pNodeWithRepo } from '../../src/types.js'
 
 /**
  * End-to-end suite for networked mode: two in-process libp2p peers exchanging
- * strand data over a real `createLibp2pNode` mesh, each backed by its own
- * `FileRawStorage`. No `vi.mock` calls — Vitest scopes the unit spec's mocks
+ * strand data over a real `createLibp2pNode` mesh, each backed by its own directory of file
+ * storage. No `vi.mock` calls — Vitest scopes the unit spec's mocks
  * to that file, so this suite uses real libp2p + real optimystic.
  *
  * Each peer uses `fretProfile: 'edge'` (the plugin default and the production
@@ -41,7 +41,7 @@ interface PeerHandle {
 	db: Database;
 	node: Libp2p;
 	result: SereusPluginResult;
-	storage: FileRawStorage;
+	storage: OpenNodeStorage;
 	dir: string;
 }
 
@@ -104,7 +104,7 @@ async function startPeer(
 	storageDir: string,
 	schemaVersion = 1,
 ): Promise<PeerHandle> {
-	const storage = new FileRawStorage(storageDir);
+	const storage = fileNodeStorage(storageDir);
 	const node = await createLibp2pNode({
 		port: 0,
 		bootstrapNodes,
@@ -164,6 +164,13 @@ async function tearDown(peer: PeerHandle | null): Promise<void> {
 		if (peer.node.status === 'started') await peer.node.stop();
 	} catch (err) {
 		console.error('node.stop error:', err);
+	}
+	// The opener closes: the node closes no store it was handed, and the directory's write log and
+	// lock are released here so `safeRm` can take the directory away.
+	try {
+		await peer.storage.close();
+	} catch (err) {
+		console.error('storage.close error:', err);
 	}
 	await safeRm(peer.dir);
 }

@@ -4,7 +4,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { SqlCommitDurabilityListener, CommitFullyHeldListener, OfflineConfig, OfflineMode } from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
 import type { ICohortReachability, IRepo } from '@optimystic/db-core';
-import type { IKVStore, IRawStorage, NodeOptions } from '@optimystic/db-p2p';
+import type { IKVStore, NodeOptions, NodeStorage } from '@optimystic/db-p2p';
 import type {
 	StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo,
 	StrandOfflineOptions, StrandOfflineController,
@@ -15,7 +15,6 @@ import type { PeerConnectEvents } from './app-schema-waits.js';
 import { offlineControllers } from './offline-controllers.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
-import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 import { createEmptyCollections, type CollectionRegistrySource } from './empty-collections.js';
 
 const log = debug('sereus:plugin:strand');
@@ -168,8 +167,8 @@ export interface CreateNodeContext {
 	 * written out in full.
 	 */
 	clusterPolicy: NonNullable<NodeOptions['clusterPolicy']>;
-	/** Resolved persistent storage to back the node, if any. */
-	storage?: IRawStorage;
+	/** Resolved persistent storage to back the node, if any. Pass it to `createLibp2pNode` verbatim. */
+	storage?: NodeStorage;
 }
 
 /** Context passed to the platform's storage-resolution strategy. */
@@ -177,7 +176,7 @@ export interface ResolveStorageContext {
 	strandId: string;
 	resolvedTransactor: StrandTransactor;
 	/** The storage the caller passed in `options.storage`, if any. */
-	requestedStorage?: IRawStorage;
+	requestedStorage?: NodeStorage;
 }
 
 /**
@@ -198,7 +197,7 @@ export interface StrandPlatform {
 	 * `options.storage` is used verbatim (Node). The browser supplies this to
 	 * default to IndexedDB so a reload survives.
 	 */
-	resolveStorage?(ctx: ResolveStorageContext): Promise<IRawStorage | undefined> | IRawStorage | undefined;
+	resolveStorage?(ctx: ResolveStorageContext): Promise<NodeStorage | undefined> | NodeStorage | undefined;
 	/**
 	 * The store to journal offline transactions in when `options.offline` names no `journal`.
 	 * Called after {@link resolveStorage}, only when `options.offline` is given. Optional — when
@@ -289,59 +288,25 @@ export async function composeStrand(
 	log('Connecting to strand %s (network: %s, transactor=%s)',
 		strandId, networkName, resolvedTransactor);
 
-	// Resolve storage. Node passes `options.storage` through; the browser
-	// defaults to IndexedDB. The resolved instance feeds BOTH the local
-	// transactor's `rawStorageFactory` and node creation, so it must be decided
-	// up front (before pluginConfig is built). Wrapped in the write-through
-	// raw-storage cache (cached-storage.ts) — idempotent, so a caller that
-	// already wrapped (cadre-core's seams) passes through unchanged, with this
-	// composition counted as one more holder of that same cache.
-	const resolvedStorage = platform.resolveStorage
+	// Resolve storage. Node passes `options.storage` through; the browser defaults to IndexedDB.
+	// The resolved value feeds BOTH the local transactor's `storageFactory` and node creation, so
+	// it must be decided up front (before pluginConfig is built). Handed on unwrapped: the read
+	// cache in front of `blocks` is taken below us under a lease — by the node's `resolveStorage`
+	// and by the Optimystic plugin's collection factory, each through upstream's `withReadCache`,
+	// which shares one cache per backing store and passes a store already reporting `readCached`
+	// straight through.
+	const storage = platform.resolveStorage
 		? await platform.resolveStorage({ strandId, resolvedTransactor, requestedStorage: options.storage })
 		: options.storage;
-	const storage = resolvedStorage ? wrapStorageWithCache(resolvedStorage, strandId) : resolvedStorage;
 
-	/**
-	 * Release THIS composition's claim on the storage cache — the matching half of the
-	 * wrap above, which took one. `wrapStorageWithCache` counts holders, so this is
-	 * unconditionally correct whoever created the wrapper: the cache stays live while
-	 * cadre-core (or any other seam over the same store) still holds a claim, and is
-	 * emptied and unregistered from the shared cache pool when the last one goes. Holding
-	 * a claim past the strand's life is not free — the registration claims the backing
-	 * store in the pool, and a claim outliving its strand makes the next connect over that
-	 * same directory throw.
-	 *
-	 * Latched, so a caller that calls `shutdown()` twice releases one claim, not two — a
-	 * second release would consume another scope's claim.
-	 */
-	let storageCacheReleased = false;
-	const releaseStorageCache = async (): Promise<void> => {
-		if (storageCacheReleased || !storage) {
-			return;
-		}
-		storageCacheReleased = true;
-		await disposeStorageCache(storage);
-	};
-
-	// 1-2. Register the crypto and optimystic plugins. Guarded on its own, because the
-	// wrap above has ALREADY taken a holder claim: a registration that throws must release
-	// it, or the claim — and the backing store's registration in the shared cache pool —
-	// outlives the failed connect for the process lifetime, and no other scope can retire
-	// the cache. Separate from the larger try below, which has a collection factory and
-	// possibly a node to tear down as well; neither exists yet here.
-	let pluginResult: OptimysticPluginResult;
-	try {
-		pluginResult = await registerStrandPlugins(db, platform, {
-			resolvedTransactor,
-			networkName,
-			enableCache,
-			storage,
-			offline: options.offline && strandOfflineConfig(strandId, options.offline, platform),
-		});
-	} catch (err) {
-		await releaseStorageCache();
-		throw err;
-	}
+	// 1-2. Register the crypto and optimystic plugins.
+	const pluginResult: OptimysticPluginResult = await registerStrandPlugins(db, platform, {
+		resolvedTransactor,
+		networkName,
+		enableCache,
+		storage,
+		offline: options.offline && strandOfflineConfig(strandId, options.offline, platform),
+	});
 
 	const { collectionFactory } = pluginResult;
 	const offline: StrandOfflineController | undefined = options.offline && pluginResult.offline;
@@ -497,7 +462,6 @@ export async function composeStrand(
 		// Clean up resources if setup fails after partial initialization.
 		offlineControllers.delete(db);
 		await releaseOptimysticPlugin(pluginResult, createdNode);
-		await releaseStorageCache();
 		throw err;
 	}
 
@@ -532,7 +496,6 @@ export async function composeStrand(
 			released.abort();
 			offlineControllers.delete(db);
 			await releaseOptimysticPlugin(pluginResult, createdNode);
-			await releaseStorageCache();
 			log('Strand connection %s shut down', strandId);
 		},
 	};
@@ -578,8 +541,7 @@ function strandJournalLabel(strandId: string): string {
 
 /**
  * Steps 1-2 of {@link composeStrand}: register the crypto plugin, then the optimystic
- * plugin carrying this strand's transactor defaults. Split out so the composition can
- * guard the pair against the storage-cache claim it has already taken.
+ * plugin carrying this strand's transactor defaults.
  */
 async function registerStrandPlugins(
 	db: Database,
@@ -588,14 +550,14 @@ async function registerStrandPlugins(
 		resolvedTransactor: StrandTransactor;
 		networkName: string;
 		enableCache: boolean;
-		storage: IRawStorage | undefined;
+		storage: NodeStorage | undefined;
 		offline: OfflineConfig | undefined;
 	},
 ): Promise<OptimysticPluginResult> {
 	await platform.registerCrypto(db);
 	log('Registered crypto plugin');
 
-	// On the local transactor with persistent storage, hand the same instance to the
+	// On the local transactor with persistent storage, hand the same stores to the
 	// plugin so DML persists on the host backend (not in-memory).
 	const pluginConfig: Record<string, unknown> = {
 		default_transactor: strand.resolvedTransactor,
@@ -605,7 +567,11 @@ async function registerStrandPlugins(
 	};
 	if (strand.resolvedTransactor === 'local' && strand.storage) {
 		const storage = strand.storage;
-		pluginConfig.rawStorageFactory = () => storage;
+		// NOTE: the key name is load-bearing and nothing checks it. `pluginConfig` is a
+		// `Record<string, unknown>` upstream reads by name, and a name it does not know is ignored
+		// without a word — the `local` transactor then quietly keeps every write in memory. Pinned by
+		// `plugin.spec.ts` → "writes through the storage it was handed".
+		pluginConfig.storageFactory = () => storage;
 	}
 	// NOTE: `cost_profile` is left at upstream's default, `distributed` on the network transactor. A
 	// strand keeps each block on `DEFAULT_STRAND_CLUSTER_SIZE` machines, so in a larger party a read
@@ -618,7 +584,7 @@ async function registerStrandPlugins(
 		pluginConfig.offline = strand.offline;
 	}
 	// The plugin's published signature is `Record<string, SqlValue>` but it also reads
-	// `rawStorageFactory` (a function reference) and `offline` (an object) from the same
+	// `storageFactory` (a function reference) and `offline` (an object) from the same
 	// map. Cast through unknown rather than widen the public type.
 	const pluginResult = optimysticPlugin(
 		db,
