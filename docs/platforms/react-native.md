@@ -146,6 +146,10 @@ An app whose packages are linked from local checkouts (a monorepo root, sibling 
 
 Each root is resolved to the directory it names on disk before being watched, because Metro reads a symlink's target as a string and looks that string up in the file map it crawled from the watched roots, comparing path segments literally. An app may therefore name a root however the filesystem accepts it — through a link, or on a case-insensitive filesystem with letters the directory does not use.
 
+That fixes the watched roots, not the links. A package manager writes the path a link was *configured* with rather than the one the disk spells: the optimystic checkout portals the FRET DHT as `portal:../Fret/packages/fret` while that directory is `C:\Projects\fret`, so Metro restarts its lookup at a string no crawl reached and the export fails with "Unable to resolve module `p2p-fret`" from an importer that is fine.
+
+A link's spelling belongs to the checkout that installed it, which is read-only from here, so the kit's resolver instead retries: a bare specifier Metro could not resolve is looked up once more against the directory the filesystem spells for the nearest installed copy. A retry that also fails rethrows Metro's own error, so a module that is genuinely absent reports as before. Resolving to that one directory is also what keeps a single copy of the package in the bundle.
+
 ### Node built-in aliases
 
 Metro follows every import in the graph, including ones behind runtime checks that never pass on a phone, so each Node built-in that libp2p imports must resolve to something. The kit maps each under both its bare name and its `node:` name. Metro consults these only after every `node_modules` lookup fails.

@@ -16,10 +16,10 @@
  * a resolver no app runs.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 type CadreMetro = typeof import('../../metro/index.cjs');
@@ -169,18 +169,20 @@ function lookupPath(path: string) {
 }
 
 /**
- * Metro's `getPackageForModule`: the nearest `package.json` above `modulePath`, searching no
- * higher than the nearest `node_modules` directory (Metro's own lookup stops there too) or
- * the fixture root.
+ * Metro's `getPackageForModule`, bounded by `bound`: the nearest `package.json` above
+ * `modulePath`, searching no higher than the nearest `node_modules` directory (Metro's own
+ * lookup stops there too) or `bound`.
  */
-function closestPackage(modulePath: string) {
-	for (let dir = dirname(modulePath); dir.startsWith(fixtureRoot) && basename(dir) !== 'node_modules'; dir = dirname(dir)) {
-		const packageJsonPath = join(dir, 'package.json');
-		if (existsSync(packageJsonPath)) {
-			return { rootPath: dir, packageJson: readJson(packageJsonPath), packageRelativePath: relative(dir, modulePath) };
+function closestPackageUnder(bound: string) {
+	return (modulePath: string) => {
+		for (let dir = dirname(modulePath); dir.startsWith(bound) && basename(dir) !== 'node_modules'; dir = dirname(dir)) {
+			const packageJsonPath = join(dir, 'package.json');
+			if (existsSync(packageJsonPath)) {
+				return { rootPath: dir, packageJson: readJson(packageJsonPath), packageRelativePath: relative(dir, modulePath) };
+			}
 		}
-	}
-	return null;
+		return null;
+	};
 }
 
 /**
@@ -189,8 +191,16 @@ function closestPackage(modulePath: string) {
  * `ModuleResolution` passes, with React Native's default main fields. A warning fails the
  * resolution rather than letting Metro fall back quietly, since a fallback would mean the
  * fixture no longer exercises the path it was built for.
+ *
+ * `overrides` replaces context fields for a case whose fixture is not the shared tree, or
+ * whose point is how Metro reads the filesystem.
  */
-function metroResolve(resolver: MetroConfig['resolver'], moduleName: string, originModulePath: string): string | undefined {
+function metroResolve(
+	resolver: MetroConfig['resolver'],
+	moduleName: string,
+	originModulePath: string,
+	overrides: Record<string, unknown> = {},
+): string | undefined {
 	const context = metroResolver.createDefaultContext({
 		allowHaste: false,
 		assetExts: new Set<string>(),
@@ -200,7 +210,7 @@ function metroResolve(resolver: MetroConfig['resolver'], moduleName: string, ori
 		extraNodeModules: resolver.extraNodeModules,
 		fileSystemLookup: lookupPath,
 		getPackage: readJson,
-		getPackageForModule: closestPackage,
+		getPackageForModule: closestPackageUnder(fixtureRoot),
 		mainFields: ['react-native', 'browser', 'main'],
 		nodeModulesPaths: resolver.nodeModulesPaths ?? [],
 		originModulePath,
@@ -216,6 +226,7 @@ function metroResolve(resolver: MetroConfig['resolver'], moduleName: string, ori
 		unstable_logWarning: (message: string) => {
 			throw new Error(`Metro warned: ${message}`);
 		},
+		...overrides,
 	}, undefined);
 	return metroResolver.resolve(context, moduleName, 'android').filePath;
 }
@@ -300,5 +311,123 @@ describe('withCadreMetro linked roots', () => {
 		const absent = join(linkRoot, 'no-such-checkout');
 
 		expect(rootsOf([absent]).watchFolders).toEqual([absent]);
+	});
+});
+
+/**
+ * Metro's `fileSystemLookup` over a file map crawled from `watchFolders`, which is as much
+ * of that map as the cases below rest on: traversal sees only what the crawl reached, and a
+ * link is followed by *restarting* traversal at the target string the link stores. So a link
+ * whose target names a path outside every watched root is a dead end, however the
+ * filesystem would resolve it.
+ *
+ * `lookupPath` above is the same question asked of the filesystem instead, which is what
+ * every other case wants.
+ */
+function lookupPathLiterally(watchFolders: readonly string[]) {
+	const crawled = (path: string) => watchFolders.some((root) => path === root || path.startsWith(root + sep));
+	const lookup = (path: string): ReturnType<typeof lookupPath> => {
+		if (!crawled(path)) {
+			return { exists: false as const };
+		}
+		const throughLink = firstLinkSubstituted(path);
+		if (throughLink != null) {
+			return lookup(throughLink);
+		}
+		// No link is left along it, so the filesystem and the file map agree from here.
+		const stats = statSync(path, { throwIfNoEntry: false });
+		return stats == null
+			? { exists: false as const }
+			: { exists: true as const, type: stats.isDirectory() ? 'd' as const : 'f' as const, realPath: path };
+	};
+	return lookup;
+}
+
+/**
+ * `path` with its first link replaced by the target string that link stores, or `undefined`
+ * when no segment of it is a link. The stored target need not be how the filesystem spells
+ * the directory it reaches, which is the whole point.
+ *
+ * Starts at the second segment: the first is a drive letter or the empty string before a
+ * leading separator, and `lstat('C:')` answers about the working directory.
+ */
+function firstLinkSubstituted(path: string): string | undefined {
+	const segments = path.split(sep);
+	for (let i = 2; i <= segments.length; i++) {
+		const prefix = segments.slice(0, i).join(sep);
+		if (lstatSync(prefix, { throwIfNoEntry: false })?.isSymbolicLink() === true) {
+			const target = readlinkSync(prefix);
+			return [isAbsolute(target) ? target : join(dirname(prefix), target), ...segments.slice(i)].join(sep);
+		}
+	}
+	return undefined;
+}
+
+/**
+ * A link whose stored target names a path no crawl of the watched roots reached. Metro
+ * restarts its lookup at that string, so such a link is a dead end even though the directory
+ * it reaches is inside a watched root, and the export fails with "Unable to resolve module
+ * <name>" naming an importer that is fine.
+ *
+ * Why it happens: a package manager writes the path a link was *configured* with, not the
+ * one the disk spells. The optimystic checkout portals the FRET DHT as
+ * `portal:../Fret/packages/fret`, so its junctions read `C:\Projects\Fret\...` while the
+ * directory is `C:\Projects\fret`, and the reference app's Android export could not resolve
+ * `p2p-fret` from `@optimystic/db-p2p`. That spelling is the sibling checkout's own
+ * configuration and read-only from here (`tickets/rules/sibling-repos.md`).
+ *
+ * Reproduced by a link through an unwatched directory rather than by letter case, which only
+ * differs on a case-insensitive filesystem: `importer/node_modules/dep` stores
+ * `<root>/alias/dep`, and `alias` sits outside both watched roots, so the crawl only ever
+ * saw the package as `<root>/real/dep` — which is also what the filesystem spells for the
+ * link, and so what the kit resolves it to.
+ */
+describe('withCadreMetro past a link whose target no crawl reached', () => {
+	let spellingRoot: string;
+	let importer: string;
+	let packageMain: string;
+	let roots: string[];
+
+	beforeAll(() => {
+		spellingRoot = realpathSync.native(mkdtempSync(join(tmpdir(), 'cadre-metro-spelling-')));
+		const packageDir = join(spellingRoot, 'real', 'dep');
+		writeJson(join(packageDir, 'package.json'), { name: 'dep', main: 'index.js' });
+		packageMain = join(packageDir, 'index.js');
+		writeFile(packageMain, 'export {};\n');
+
+		importer = join(spellingRoot, 'importer', 'index.js');
+		writeFile(importer, 'export {};\n');
+		mkdirSync(join(spellingRoot, 'importer', 'node_modules'), { recursive: true });
+		symlinkSync(join(spellingRoot, 'real'), join(spellingRoot, 'alias'), 'junction');
+		symlinkSync(join(spellingRoot, 'alias', 'dep'), join(spellingRoot, 'importer', 'node_modules', 'dep'), 'junction');
+
+		roots = [join(spellingRoot, 'real'), join(spellingRoot, 'importer')];
+	});
+
+	afterAll(() => {
+		rmSync(spellingRoot, { recursive: true, force: true });
+	});
+
+	function resolveDep(resolver: MetroConfig['resolver']) {
+		return metroResolve(resolver, 'dep', importer, {
+			fileSystemLookup: lookupPathLiterally(roots),
+			getPackageForModule: closestPackageUnder(spellingRoot),
+		});
+	}
+
+	it('resolves the package to the directory the filesystem spells, which Metro alone cannot reach', () => {
+		const kit = withCadreMetro<MetroConfig>({ resolver: {} }, { projectRoot, linkedRoots: roots }).resolver;
+
+		expect(() => resolveDep({ ...kit, resolveRequest: null })).toThrow(/Module does not exist/);
+		expect(resolveDep(kit)).toBe(packageMain);
+	});
+
+	it('leaves a module that is genuinely absent to Metro\'s own error', () => {
+		const kit = withCadreMetro<MetroConfig>({ resolver: {} }, { projectRoot, linkedRoots: roots }).resolver;
+
+		expect(() => metroResolve(kit, 'no-such-package', importer, {
+			fileSystemLookup: lookupPathLiterally(roots),
+			getPackageForModule: closestPackageUnder(spellingRoot),
+		})).toThrow(/Module does not exist/);
 	});
 });

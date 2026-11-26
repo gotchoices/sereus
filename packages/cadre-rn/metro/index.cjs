@@ -25,7 +25,13 @@ const kitPeers = Object.keys(
 
 /**
  * @typedef {{ type: 'sourceFile', filePath: string } | { type: string, [key: string]: unknown }} Resolution
- * @typedef {{ originModulePath: string, resolveRequest?: ResolveRequest | null, [key: string]: unknown }} ResolutionContext
+ * @typedef {{
+ * 	originModulePath: string,
+ * 	resolveRequest?: ResolveRequest | null,
+ * 	nodeModulesPaths?: readonly string[],
+ * 	extraNodeModules?: Record<string, string>,
+ * 	[key: string]: unknown,
+ * }} ResolutionContext
  * @typedef {(context: ResolutionContext, moduleName: string, platform: string | null) => Resolution | null} ResolveRequest
  * @typedef {{
  * 	watchFolders?: readonly string[],
@@ -75,9 +81,8 @@ function withCadreMetro(config, { projectRoot, linkedRoots = [] }) {
 
 /**
  * A watched root as the filesystem spells it. An app names its linked roots by relative
- * path (`../../../optimystic`), which keeps whatever letters were typed; the junction a
- * package manager writes for a linked package instead holds the real directory, with the
- * letters the disk uses (`C:\Projects\Optimystic`).
+ * path (`../../../optimystic`), which keeps whatever letters were typed, so without this
+ * the watched root can be spelled differently from the directory it names.
  *
  * Metro resolves a symlink by reading its target as a string and looking that string up in
  * the file map it crawled from the watched roots, without asking the filesystem to
@@ -85,6 +90,11 @@ function withCadreMetro(config, { projectRoot, linkedRoots = [] }) {
  * filesystem a root whose letters differ from the disk's puts every package linked under it
  * outside every watched root, and the bundle fails with "Unable to resolve module <name>"
  * naming an importer that has nothing wrong with it.
+ *
+ * Canonicalising here fixes the watched roots, not the links: a package manager writes a
+ * link holding the path *configured* for it, not the one the disk spells, so a link can
+ * still name a directory under a watched root in letters the file map does not hold. That
+ * is what {@link relinkedPackageDir} is for.
  *
  * A path that does not resolve is returned unchanged: a sibling checkout the app names but
  * that is absent is not an error (the apps' metro.config.js says why), and Metro ignores a
@@ -163,7 +173,8 @@ function nodeBuiltinAliases() {
  * The resolver the app's config gets. It resolves through `upstream` (or Metro's own
  * resolver when there is none) and applies three rules, in this order: the kit's peers
  * resolve from the app, `@babel/runtime` helpers resolve to their CommonJS files, and two
- * libp2p packages get their `browser`-field variants.
+ * libp2p packages get their `browser`-field variants. Every resolution it makes goes
+ * through {@link retryPastLinkSpelling} first.
  *
  * @param {ResolveRequest | null} upstream
  * @param {string} projectRoot
@@ -173,10 +184,9 @@ function cadreResolveRequest(upstream, projectRoot) {
 	const appOrigin = path.join(projectRoot, 'package.json');
 	const libp2pBrowserVariant = libp2pBrowserRewriter();
 
-	/** @type {ResolveRequest} */
-	const resolveUpstream = (context, moduleName, platform) => (upstream
+	const resolveUpstream = retryPastLinkSpelling((context, moduleName, platform) => (upstream
 		? upstream(context, moduleName, platform)
-		: /** @type {ResolveRequest} */ (context.resolveRequest)({ ...context, resolveRequest: undefined }, moduleName, platform));
+		: /** @type {ResolveRequest} */ (context.resolveRequest)({ ...context, resolveRequest: undefined }, moduleName, platform)));
 
 	return (context, moduleName, platform) => {
 		if (isKitPeer(moduleName)) {
@@ -188,6 +198,145 @@ function cadreResolveRequest(upstream, projectRoot) {
 		}
 		return libp2pBrowserVariant(resolveUpstream(context, moduleName, platform));
 	};
+}
+
+/**
+ * Wraps `resolve` so that a bare specifier it could not resolve is tried once more against
+ * the package directory as the filesystem spells it.
+ *
+ * Why it is needed: a package manager writes a link for a linked package holding the path
+ * it was *configured* with, not the path the disk spells — yarn's `portal:../Fret/...` in
+ * the optimystic checkout produces a junction whose target reads `C:\Projects\Fret\...`
+ * while the directory is `C:\Projects\fret`. Metro looks a link's literal target up in its
+ * file map segment by segment, so on a case-insensitive filesystem that link is a dead end
+ * even though the directory it names is inside a watched root, and the bundle fails with
+ * "Unable to resolve module p2p-fret" naming an importer that is fine. The spelling belongs
+ * to the other checkout's configuration, which is read-only from here
+ * (`tickets/rules/sibling-repos.md`), so the app's own bundler has to tolerate it.
+ *
+ * Why a retry rather than a rewrite: the first attempt is Metro's, unchanged, so a package
+ * whose links agree with the disk resolves exactly as before and nothing here runs. The
+ * retry only adds an `extraNodeModules` entry, which Metro consults after every
+ * `node_modules` lookup has failed and resolves through the package's `exports` and
+ * `browser` fields like any other — the alternative, returning a file path of our own,
+ * would skip both. A retry that also fails rethrows the first error, so a module that is
+ * genuinely absent still gets Metro's own message listing the directories it searched.
+ *
+ * Canonicalising is what keeps one copy of the package in the bundle: every importer whose
+ * link is spelled oddly lands on the same directory as every importer whose link is not,
+ * rather than on a second copy that shares no classes with the first (the same cost
+ * `test-harness/linked-package-spellings.ts` refuses under Node).
+ *
+ * @param {ResolveRequest} resolve
+ * @returns {ResolveRequest}
+ */
+function retryPastLinkSpelling(resolve) {
+	return (context, moduleName, platform) => {
+		try {
+			return resolve(context, moduleName, platform);
+		} catch (error) {
+			const relinked = relinkedPackageDir(context, moduleName);
+			if (relinked == null) {
+				throw error;
+			}
+			const extraNodeModules = { ...context.extraNodeModules, [relinked.packageName]: relinked.dir };
+			try {
+				return resolve({ ...context, extraNodeModules }, moduleName, platform);
+			} catch {
+				throw error;
+			}
+		}
+	};
+}
+
+/**
+ * The package `moduleName` names and the directory the filesystem spells for it, when the
+ * nearest installed copy is reached by a path spelled unlike that directory; `undefined`
+ * when there is no such copy, or when the one there agrees with the disk and the failure is
+ * therefore about something else.
+ *
+ * Only the nearest copy is considered, because that is the one Node and Metro would both
+ * have used: looking further would resolve the import to a different package than the
+ * importer declares.
+ *
+ * @param {ResolutionContext} context
+ * @param {string} moduleName
+ * @returns {{ packageName: string, dir: string } | undefined}
+ */
+function relinkedPackageDir(context, moduleName) {
+	const packageName = packageNameOf(moduleName);
+	if (packageName == null) {
+		return undefined;
+	}
+	for (const nodeModules of nodeModulesCandidates(context)) {
+		const candidate = path.join(nodeModules, packageName);
+		const real = realDirectoryOf(candidate);
+		if (real != null) {
+			return real === candidate ? undefined : { packageName, dir: real };
+		}
+	}
+	return undefined;
+}
+
+/**
+ * The package a bare specifier names, or `undefined` when `moduleName` is not one: a
+ * relative or absolute path, or a `#` subpath import, each of which Metro resolves without
+ * a `node_modules` lookup for this to correct.
+ *
+ * @param {string} moduleName
+ * @returns {string | undefined}
+ */
+function packageNameOf(moduleName) {
+	if (moduleName.startsWith('.') || moduleName.startsWith('#') || path.isAbsolute(moduleName)) {
+		return undefined;
+	}
+	const parts = moduleName.split('/');
+	if (!moduleName.startsWith('@')) {
+		return parts[0];
+	}
+	// `@scope` alone is nobody's package name.
+	return parts.length < 2 ? undefined : `${parts[0]}/${parts[1]}`;
+}
+
+/**
+ * The `node_modules` directories an import from `context.originModulePath` could be
+ * installed in, nearest first: the same list Metro builds — every ancestor of the importer,
+ * then the configured `nodeModulesPaths`.
+ *
+ * @param {ResolutionContext} context
+ * @returns {string[]}
+ */
+function nodeModulesCandidates(context) {
+	const dirs = [];
+	let next = path.dirname(context.originModulePath);
+	let candidate;
+	do {
+		candidate = next;
+		dirs.push(path.join(candidate, 'node_modules'));
+		next = path.dirname(candidate);
+	} while (candidate !== next);
+	return [...dirs, ...(context.nodeModulesPaths ?? [])];
+}
+
+/**
+ * How the filesystem spells `candidate`, when it is a directory (following any link, as
+ * `stat` does); `undefined` when it is absent or is not one.
+ *
+ * @param {string} candidate
+ * @returns {string | undefined}
+ */
+function realDirectoryOf(candidate) {
+	try {
+		return fs.statSync(candidate).isDirectory() ? fs.realpathSync.native(candidate) : undefined;
+	} catch (error) {
+		const code = /** @type {{ code?: unknown }} */ (error)?.code;
+		// A path that is not there, or whose parent is a file, is simply not an install of
+		// this package. Anything else — a permission error, a cycle — is not ours to hide.
+		if (code === 'ENOENT' || code === 'ENOTDIR') {
+			return undefined;
+		}
+		throw error;
+	}
 }
 
 /**
