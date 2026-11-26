@@ -27,7 +27,7 @@ This script starts one node for a new party on Node.js, makes it the owner of it
 
 ```ts
 import { CadreNode, InMemoryKeyStore, createOwnerKey, signSchema } from '@serfab/cadre-core';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type NodeStorage } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 
 // The sApp: an app schema signed by its author. The author's public key is the sApp id.
@@ -43,15 +43,16 @@ const sAppConfig = {
 	signature: signSchema(sApp, authorKey),
 };
 
-// One store per scope: one for the control database, one for each strand.
-const stores = new Map<string, MemoryRawStorage>();
-const storeFor = (scope: string): MemoryRawStorage => {
-	let store = stores.get(scope);
-	if (!store) {
-		store = new MemoryRawStorage();
-		stores.set(scope, store);
+// One set of stores per scope: one for the control database, one for each strand.
+// Memoised because `open` is called again for a scope after its strand stops.
+const stores = new Map<string, NodeStorage>();
+const openScope = async (scope: string): Promise<NodeStorage> => {
+	let storage = stores.get(scope);
+	if (!storage) {
+		storage = memoryNodeStorage();
+		stores.set(scope, storage);
 	}
-	return store;
+	return storage;
 };
 
 const keyStore = new InMemoryKeyStore();
@@ -59,7 +60,7 @@ const node = new CadreNode({
 	keyStore,
 	controlNetwork: { partyId: crypto.randomUUID(), bootstrapNodes: [] },
 	nodeClass: 'device',
-	storage: { provider: storeFor },
+	storage: { open: openScope },
 });
 await node.start();
 

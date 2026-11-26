@@ -61,3 +61,15 @@ thing, clearly named, so the two never get confused.
 `tickets/complete/1-debt-storage-cache-wrap-unrefcounted.md` carries the counting invariant and the
 call-site walk this would confirm. If that ticket ages out of `complete/`, the invariant is in the
 module doc of `packages/quereus-plugin-sereus/src/cached-storage.ts`.
+
+## Status after the Optimystic 1.30 adoption (added in review of `optimystic-1-30-cadre-core-node-storage`)
+
+The single-instance form this ticket is about no longer exists: `storage.provider` became
+`storage.open(scope)`, a function only, and `cached-storage.ts` is gone with it. The claim in
+`docs/cadre/node.md`'s limits that the form was supported but unexercised was removed in that
+review, because it documented a configuration a caller can no longer write. The holder counting
+the ticket was protecting now lives in upstream's `withReadCache` and `fileNodeStorage` and is
+tested there.
+
+The file is left in place only because `tickets/implement/5-optimystic-1-30-release-notes-and-fold.md`
+owns deleting it and carries the reasoning to record when it does. Nothing here is still work.

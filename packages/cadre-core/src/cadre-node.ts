@@ -2360,6 +2360,14 @@ export class CadreNode implements SAppIdLookup {
     if (!this.controlNode) {
       return;
     }
+    // NOTE: `_running` is already true when `start()` reaches here, so a `stop()` begun from the
+    // `control:connected` handler can be running its cleanup across this await. Harmless today
+    // only because `buildControlNodeOptions` has already opened the control scope, so the
+    // resolver below returns the held value within a microtask — far less than cleanup needs to
+    // reach its lease release. If this ever becomes the FIRST reader of the control scope (a
+    // backfill armed before the node is built, say), the open can land after cleanup released
+    // the lease: it would take a second lease nothing releases, and a second open, which LevelDB
+    // refuses outright. Guard `resolveControlStorage` on a teardown in flight then.
     const storage = await this.controlBackfillStorage();
     const keyNetwork = (this.controlNode as Libp2pNodeWithRepo).keyNetwork;
     if (!storage || !keyNetwork) {

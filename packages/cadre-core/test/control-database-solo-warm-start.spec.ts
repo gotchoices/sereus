@@ -27,12 +27,17 @@ import type { CadreNodeConfig, StrandInstance, StrandRow } from '../src/types.js
  * and all three come from a report we could not otherwise reproduce (see the
  * `solo-warm-start-blocks-on-prior-cohort-peers` ticket):
  *
- *  1. **Real files, not a shared heap object.** `control-database-solo.spec.ts`
- *     and `control-database-offline-peers.spec.ts` restart against the SAME
- *     `MemoryRawStorage` instance, so the "restart" keeps a live object across
- *     the boundary. Here each run builds a fresh `FileRawStorage` over the same
- *     directory (see {@link fileStorageProvider}), so nothing but the bytes on
- *     disk crosses from one run to the next.
+ *  1. **Real bytes, not a heap object.** `control-database-solo.spec.ts` and
+ *     `control-database-offline-peers.spec.ts` restart against
+ *     `memoryStorageProvider`, so what crosses the boundary is a live object
+ *     graph. Here every run reads the same DIRECTORY (see
+ *     {@link fileStorageProvider}), so the rows a restart hydrates from were
+ *     written through a filesystem backend and its write-ahead log — a hydrate
+ *     path that works only against an in-memory store fails here. What this does
+ *     NOT give is a cold handle: `fileNodeStorage` keeps one set of stores per
+ *     directory in the process, counted by holder, and the helper never closes
+ *     one, so each run reaches the same store objects. Restoring that half is
+ *     `debt-restart-specs-share-one-file-store-handle`.
  *  2. **A non-empty member list with zero reachable peers.** The prior session
  *     left `CadrePeer` rows naming siblings that no longer exist, so
  *     `resolveCohortSeed` walks a real membership list yet can reach nobody and

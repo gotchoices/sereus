@@ -40,7 +40,7 @@ import {
 	signSchema,
 	ed25519PublicKeyFromPrivate,
 } from '@serfab/cadre-core';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
@@ -55,7 +55,7 @@ function nodeConfig(partyId, keyStore) {
 		nodeClass: 'device',
 		strandFilter: { mode: 'all' },
 		keyStore,
-		storage: { provider: () => new MemoryRawStorage() },
+		storage: { open: async () => memoryNodeStorage() },
 		network: {
 			transports: [webSockets(), circuitRelayTransport()],
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
@@ -229,7 +229,7 @@ Each party runs its own program. The sApp config ships inside the app, and only 
 
 - **A must be reachable.** The invitation carries A's control addresses and formation returns A's strand addresses, and here both are loopback addresses. On a machine B can dial, set `network.listenAddrs` to an address B can reach. A phone or a browser tab cannot listen, so it names a relay in `network.relayAddrs` and is reached through it. See [Relays](network/relay.md).
 - **A must be running when B redeems.** `formStrand` fails if no machine named in the invitation answers. `requestJoin` records the request and retries.
-- **Keys and data must be kept.** Replace `InMemoryKeyStore` and `MemoryRawStorage` with the durable classes named under [Start a node for party A](#2-start-a-node-for-party-a), and give the node durable stores for the records listed in [Node-local state](cadre/node.md#node-local-state).
+- **Keys and data must be kept.** Replace `InMemoryKeyStore` and `memoryNodeStorage` with the durable backends named under [Start a node for party A](#2-start-a-node-for-party-a), and give the node durable stores for the records listed in [Node-local state](cadre/node.md#node-local-state).
 - **A restarted app re-attaches its strands.** After `start()`, the node reports each of the party's strands that the app has not yet claimed through the `strand:discovered` event and `getDiscoveredStrands()`. The app subscribes first, then reads that map, and calls `addStrand` with its sApp config for each. See [Reactive strand management](strands/lifecycle.md#reactive-strand-management).
 
 ## Where to go next

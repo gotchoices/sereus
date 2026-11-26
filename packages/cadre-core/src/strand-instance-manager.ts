@@ -449,6 +449,16 @@ type RuntimeTransition =
   | { kind: 'quiesce'; operation: Promise<void> };
 
 /**
+ * A first {@link StrandInstanceManager.startStrand} of one strand still in flight — see
+ * `launches`. The config travels with the promise because a caller joining the launch has no
+ * other record of what founder-ness the launch in flight is running under.
+ */
+interface StrandLaunch {
+  readonly instance: Promise<StrandInstance>;
+  readonly config: StartStrandConfig;
+}
+
+/**
  * Open one strand's storage and lease a read cache over its blocks.
  *
  * Called only from {@link StrandInstanceManager.startStrand}, which owns the result for the
@@ -622,10 +632,14 @@ export class StrandInstanceManager {
    * stop. A second caller joins the launch in flight instead, which is what the tracked-instance
    * early return already does once the record exists.
    *
+   * Carries the launch's own config beside its promise because `launchConfigs` is not written
+   * until the launch has opened the scope, so it is the only thing a joining caller can compare
+   * its own founder flag against.
+   *
    * Not {@link runtimeBuilds}, which starts only once the instance IS recorded, and not
    * {@link transitions}, which is about a tracked instance's quiesce/resume.
    */
-  private launches: Map<string, Promise<StrandInstance>> = new Map();
+  private launches: Map<string, StrandLaunch> = new Map();
   /**
    * The runtime build in flight per strand id (`buildStrandRuntime`, from `startStrand` or
    * `resumeStrand`, or a deferred join's database retry), present until it settles. The
@@ -730,7 +744,7 @@ export class StrandInstanceManager {
 
     const tracked = this.instances.get(strandId);
     if (tracked) {
-      this.warnIfFounderRequestDropped(config, strandId);
+      this.warnIfFounderRequestDropped(config, strandId, this.launchConfigs.get(strandId));
       log('Strand %s already running', strandId);
       return tracked;
     }
@@ -742,15 +756,18 @@ export class StrandInstanceManager {
     // Joining the launch in flight is the same answer the early return above gives.
     const inFlight = this.launches.get(strandId);
     if (inFlight) {
-      this.warnIfFounderRequestDropped(config, strandId);
+      // Against the launch's OWN config, not `launchConfigs`: that entry is not written until
+      // the launch has opened the scope, so comparing with it here would report every
+      // founder-joining-a-founder race as a dropped bootstrap.
+      this.warnIfFounderRequestDropped(config, strandId, inFlight.config);
       log('Strand %s is already being launched', strandId);
-      return await inFlight;
+      return await inFlight.instance;
     }
 
-    const launch = this.launchStrandInstance(config);
+    const launch: StrandLaunch = { instance: this.launchStrandInstance(config), config };
     this.launches.set(strandId, launch);
     try {
-      return await launch;
+      return await launch.instance;
     } finally {
       if (this.launches.get(strandId) === launch) {
         this.launches.delete(strandId);
@@ -761,13 +778,20 @@ export class StrandInstanceManager {
   /**
    * Callers resolve founder-ness BEFORE reaching {@link startStrand} (CadreNode.launchStrand) and
    * honor a founder request on a tracked instance via `foundExistingStrand` — so a founder flag
-   * arriving at one of that method's early returns against a non-founder retained config is a
+   * arriving at one of that method's early returns against a non-founder `existing` config is a
    * dropped bootstrap, and must never again be silent.
+   *
+   * `existing` is whatever config the strand is already running or launching under: the retained
+   * one for a tracked instance, the in-flight launch's own for a joining caller.
    */
-  private warnIfFounderRequestDropped(config: StartStrandConfig, strandId: string): void {
-    if (config.founder === true && this.launchConfigs.get(strandId)?.founder !== true) {
-      log('startStrand: strand %s is already running but was NOT launched as founder — ' +
-        'this early return DROPS the founder request; use foundExistingStrand', strandId);
+  private warnIfFounderRequestDropped(
+    config: StartStrandConfig,
+    strandId: string,
+    existing: StartStrandConfig | undefined
+  ): void {
+    if (config.founder === true && existing?.founder !== true) {
+      log('startStrand: strand %s is already running or launching but was NOT launched as ' +
+        'founder — this early return DROPS the founder request; use foundExistingStrand', strandId);
     }
   }
 

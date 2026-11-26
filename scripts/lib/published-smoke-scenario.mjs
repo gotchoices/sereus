@@ -101,8 +101,8 @@ let ed25519KeyPairFromLibp2p;
 let ed25519PublicKeyB64FromPeerId;
 let signPeerRecord;
 let signSchema;
-let MemoryRawStorage;
-let FileRawStorage;
+let memoryNodeStorage;
+let fileNodeStorage;
 let webSockets;
 let generateKeyPair;
 let peerIdFromPrivateKey;
@@ -110,9 +110,9 @@ try {
 	// Dynamic rather than static so an ERR_MODULE_NOT_FOUND is catchable and reportable
 	// here; a static import would abort the process before any of this file ran.
 	({ CadreNode, InMemoryKeyStore, createOwnerKey, loadOwnerSigner, ed25519KeyPairFromLibp2p, ed25519PublicKeyB64FromPeerId, signPeerRecord, signSchema } = await import('@serfab/cadre-core'));
-	({ MemoryRawStorage } = await import('@optimystic/db-p2p'));
+	({ memoryNodeStorage } = await import('@optimystic/db-p2p'));
 	// The warm-start cases restart across real files rather than a shared heap object.
-	({ FileRawStorage } = await import('@optimystic/db-p2p-storage-fs'));
+	({ fileNodeStorage } = await import('@optimystic/db-p2p-storage-fs'));
 	({ webSockets } = await import('@libp2p/websockets'));
 	// Minting a throwaway sibling identity, exactly as `control-db-node-helpers.ts` does.
 	({ generateKeyPair } = await import('@libp2p/crypto/keys'));
@@ -130,12 +130,11 @@ function freshPartyId(tag) {
 /**
  * The mobile/browser control-node config: WebSockets-only, no listen address, no
  * bootstrap peers. `keyStore` + `storage` are passed in so a restart reuses the same
- * identity and the same block storage (a warm start).
+ * identity and the same storage (a warm start).
  *
- * `storage` is a `RawStorageProvider` — either one `IRawStorage` instance (control
- * node and any strand node then share it) or an `(id) => IRawStorage` factory. Pass
- * {@link fileStorageProvider} for a restart that survives on DISK rather than in this
- * process's heap.
+ * `storage` is a `StorageConfig.open` — an async `(scope) => NodeStorage`, one set of
+ * stores per scope. Pass {@link memoryStorageProvider} for a restart that survives in
+ * this process's heap, {@link fileStorageProvider} for one that survives on DISK.
  */
 function controlNodeConfig({ partyId, profile, keyStore, storage }) {
 	return {
@@ -144,7 +143,7 @@ function controlNodeConfig({ partyId, profile, keyStore, storage }) {
 		nodeClass: 'server',
 		controlNetwork: { partyId, bootstrapNodes: [] },
 		profile,
-		storage: { provider: storage },
+		storage: { open: storage },
 		network: { transports: [webSockets()], listenAddrs: [] }
 	};
 }
@@ -155,25 +154,44 @@ function tempStorageDir(tag) {
 }
 
 /**
- * An `(id) => IRawStorage` factory backed by real files under `baseDir`, one
- * subdirectory per id — `'control'` for the control network, the strand id for each
- * strand. Mirrors `control-db-node-helpers.ts`'s `fileStorageProvider`.
+ * A `StorageConfig.open` backed by real files under `baseDir`, one subdirectory per
+ * scope — the control scope key for the control network, the strand id for each strand.
+ * Mirrors `control-db-node-helpers.ts`'s `fileStorageProvider`.
  *
- * The instance per id is MEMOISED, so two calls for the same id hand back the same
- * handle rather than two views of one directory. `CadreNode` asks once per node
- * instance, so a restart against the same `baseDir` gets a *new* `FileRawStorage`
- * reading the rows the previous run left on disk — which is the point: unlike a shared
- * `MemoryRawStorage`, nothing survives in the heap, so a warm start that only appears
- * to work because the old object was still around cannot pass.
+ * Memoised per scope, so two opens of one scope hand back the same value rather than two
+ * views of one directory; `fileNodeStorage` keeps one set of stores per directory in the
+ * process anyway, counted by holder. What a restart gets is therefore the same DIRECTORY
+ * and real bytes — written through a filesystem backend and its write-ahead log, not kept
+ * as heap objects — rather than a cold handle, so a warm start that only works against an
+ * in-memory store cannot pass here. The stores are not closed: the caller removes
+ * `baseDir`.
  */
 function fileStorageProvider(baseDir) {
 	const byId = new Map();
-	return (id) => {
+	return async (id) => {
 		let storage = byId.get(id);
 		if (!storage) {
 			// encodeURIComponent: strand ids are caller-supplied and reach the filesystem
 			// here, and `FileStoreDriver` does no escaping of its own.
-			storage = new FileRawStorage(join(baseDir, encodeURIComponent(id)));
+			storage = fileNodeStorage(join(baseDir, encodeURIComponent(id)));
+			byId.set(id, storage);
+		}
+		return storage;
+	};
+}
+
+/**
+ * A `StorageConfig.open` backed by one `memoryNodeStorage()` per scope — the heap-resident
+ * counterpart of {@link fileStorageProvider}, memoised for the same reason: handing back a
+ * fresh (empty) set on a second open of one scope would split that scope's blocks across two
+ * views, and the restart cases depend on the second run reading the first run's rows.
+ */
+function memoryStorageProvider() {
+	const byId = new Map();
+	return async (id) => {
+		let storage = byId.get(id);
+		if (!storage) {
+			storage = memoryNodeStorage();
 			byId.set(id, storage);
 		}
 		return storage;
@@ -199,7 +217,7 @@ async function readColumn(node, sql, column) {
 async function soloWriteAndReadBack(profile) {
 	const partyId = freshPartyId(`solo-${profile}-write`);
 	const keyStore = new InMemoryKeyStore();
-	const storage = new MemoryRawStorage();
+	const storage = memoryStorageProvider();
 	const node = new CadreNode(controlNodeConfig({ partyId, profile, keyStore, storage }));
 
 	try {
@@ -254,11 +272,11 @@ async function soloWriteAndReadBack(profile) {
 
 async function restartAndReRead() {
 	const partyId = freshPartyId('solo-restart');
-	// Shared across both runs: same identity slot, same block storage — a warm restart,
+	// Shared across both runs: same identity slot, same storage — a warm restart,
 	// which enters ControlDatabase.initialize's catalog-hydrate path rather than the
 	// fresh-schema path.
 	const keyStore = new InMemoryKeyStore();
-	const storage = new MemoryRawStorage();
+	const storage = memoryStorageProvider();
 	const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
 
 	const first = new CadreNode(config());
@@ -319,8 +337,11 @@ async function restartAndReRead() {
 //
 // Different from the three cases above in three ways, all of which come from the
 // shape an embedding React Native team reported:
-//  1. Real FILES (`fileStorageProvider`), not one shared `MemoryRawStorage`, so only
-//     bytes on disk cross the restart boundary.
+//  1. Real FILES (`fileStorageProvider`), not heap-resident stores, so what the restart
+//     reads was written through a filesystem backend and its write-ahead log. Not a cold
+//     handle: `fileNodeStorage` keeps one set of stores per directory in the process, so
+//     the same store objects are reached — the same half this case's spec port lost
+//     (`debt-restart-specs-share-one-file-store-handle`).
 //  2. A non-empty member list with zero reachable peers — the seed resolution walks
 //     a real membership list yet reaches nobody, so the strand launches on the
 //     network transactor (every strand's transactor) with an empty bootstrap list.
@@ -349,7 +370,7 @@ async function signedSApp() {
 }
 
 /**
- * Run `body` against a device whose identity slot and block storage survive every
+ * Run `body` against a device whose identity slot and storage survive every
  * restart inside it, then delete the storage directory. The `keyStore` is shared (same
  * libp2p identity, hence the same PeerId, across restarts) and the storage is
  * file-backed under a fresh temp directory.
@@ -363,10 +384,11 @@ async function withDevice(tag, body) {
 		await body(() => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage }));
 	} finally {
 		// `force` so a case that failed before creating anything still cleans up, and a
-		// scratch project is never left holding block directories. The retries are for
-		// Windows: `force` swallows ENOENT but not the EBUSY a `FileRawStorage` handle
-		// that outlives `stop()` would raise, and a teardown throw here would fail an
-		// otherwise-passing case. Same treatment as
+		// scratch project is never left holding storage directories. The retries are for
+		// Windows: `force` swallows ENOENT but not the EBUSY a store handle that outlives
+		// `stop()` would raise — and `fileStorageProvider` closes none, so every scope's
+		// handle does. A teardown throw here would fail an otherwise-passing case. Same
+		// treatment as
 		// `packages/integration-tests/src/harness/test-cadre-host.ts`.
 		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	}

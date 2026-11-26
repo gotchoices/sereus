@@ -1,6 +1,6 @@
 description: The code a new developer is told to copy from the getting-started walkthrough and the main library's quick start has never been run by anyone or anything, so nothing would notice if it stopped working; documentation examples that call the library should be run by a test.
 architecture: docs/contributing/gates.md#documentation
-files: docs/getting-started.md, packages/cadre-core/README.md, packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts, packages/quereus-plugin-sereus/test/helpers/fenced-blocks.ts, scripts/check-docs.mjs, packages/integration-tests/src/scenarios/strand-formation-cross-party-seed.integration.ts, docs/contributing/gates.md
+files: docs/getting-started.md, packages/cadre-core/README.md, scripts/lib/published-smoke-scenario.mjs, packages/quereus-plugin-sereus/test/schema-guide-examples.spec.ts, packages/quereus-plugin-sereus/test/helpers/fenced-blocks.ts, scripts/check-docs.mjs, packages/integration-tests/src/scenarios/strand-formation-cross-party-seed.integration.ts, docs/contributing/gates.md
 tradeoffs: The getting-started script starts two real nodes and joins them over a local network connection, so running it is as heavy as an integration scenario and needs every package built, and snippets shown out of context need scaffolding before they compile; a maintainer may choose to run only the one end-to-end script and leave the rest to review.
 ----
 
@@ -40,3 +40,11 @@ A rename or a signature change in cadre-core lands with its tests green. Today t
 - `test/helpers/fenced-blocks.ts` already extracts fenced blocks with their info strings and is the natural shared piece. It lives in one package's test folder; `test-harness/` is where cross-package test infrastructure goes.
 - The getting-started script uses in-memory keys and storage and loopback WebSocket, the same arrangement as `strand-formation-cross-party-seed.integration.ts`, so `packages/integration-tests` is the layer that already runs code of this weight.
 - While the documentation was being rewritten, the linked `../optimystic` build did not load against the linked `../quereus` (a removed `getTypeOrDefault` export), which is one reason the script was not run at the time. That is an environment state, not part of this ticket.
+
+## Observed, not just predicted (added in review of `optimystic-1-30-cadre-core-node-storage`)
+
+The failure this ticket's use case describes happened. `optimystic-1-30-cadre-core-node-storage` replaced `CadreNodeConfig.storage.provider` with `storage.open` and deleted `MemoryRawStorage`'s use from cadre-core, and both covered documents' code blocks were left calling the old API while their surrounding prose was updated: `docs/getting-started.md`'s import and `nodeConfig`, and the cadre-core README quick start's `stores`/`storeFor` block. Every test, typecheck and lint pass in that commit was green. The review of the next stage caught it by reading; nothing in the repository would have.
+
+Same for the third unexecuted script in the same class: `scripts/lib/published-smoke-scenario.mjs` built `storage: { provider }` with a single shared store, a form the change made unwritable, and `yarn check:published` would not have failed on it until cadre-core was actually published. Fixed in that review too, unverified — `check:published` installs from npm and so cannot exercise an unpublished change.
+
+Three documents, one commit. That is the evidence for the invariant, and it suggests the covered set should include the smoke scenario, not only the two documents named above.

@@ -1,8 +1,8 @@
 /**
  * storage-scope.ts — the scope keys `CadreNodeConfig.storage.open` is called with.
  *
- * A provider is a factory cadre-core invokes once per **scope**: once for the control
- * database and once for each strand. A strand's scope key is its strand id; the control
+ * cadre-core calls `storage.open` once per **scope**: once for the control database and
+ * once for each strand. A strand's scope key is its strand id; the control
  * database's scope key is what this module mints.
  *
  * WHY THE CONTROL SCOPE CARRIES THE PARTY ID. The control database holds the party's

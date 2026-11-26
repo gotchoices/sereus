@@ -32,8 +32,12 @@ export interface CachedNodeStorage {
  *
  * `pieces` and `kv` are carried through untouched, and `blocks` is the only field replaced: the
  * cache reports the INNER store's identity, so `blockStoreCountsPieces` still finds `blocks` and
- * `pieces` in one location and the node's account does not count the pieces twice. Do not reorder
- * this so that `pieces` comes from a different value than `blocks` did.
+ * `pieces` in one LOCATION and the node's account does not count the pieces twice. Location, not
+ * object: on an identity hit `withReadCache` fronts the FIRST caller's block store and drops the
+ * one passed in, so `blocks` and `pieces` here can be different objects over one location — which
+ * is what the account measures by, and what every shipped opener gives one set of stores per
+ * location anyway. Do not reorder this so that `pieces` comes from a different LOCATION than
+ * `blocks` did.
  */
 export function cachedNodeStorage(opened: NodeStorage, scope: string): CachedNodeStorage {
 	const { storage: blocks, lease } = withReadCache(opened.blocks, scope);
