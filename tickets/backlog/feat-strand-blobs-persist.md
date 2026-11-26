@@ -14,6 +14,10 @@ Optimystic 1.29.0 adds blobs: a large value cut into content-addressed pieces, k
 
 No Sereus node passes `pieceStorage`, and strand nodes pass no `kvStore`. An app that declares a `blobref` column in its strand schema gets a working column whose bytes live only in memory on the writer and on each cohort member that pulled them. Restarting every holder loses the bytes while the row keeps the reference. `docs/schema-guide.md` → "Limits and accepted tradeoffs" says not to use the type yet.
 
+Since Optimystic 1.30 there are no separate `pieceStorage` and `kvStore` options to pass: a node takes one `NodeStorage` carrying the blocks, the node-local records and the pieces together, so each platform's work here is one opener rather than three fields. The SQL plugin already hands that whole value to the strand node (ticket `optimystic-1-30-plugin-node-storage`), which narrows what is left.
+
+One site this leaves, found reviewing that ticket: `composeStrand` passes the storage to the Optimystic plugin's `storageFactory` on the `local` transactor only, so a `network` connection over a *client* node — one that holds no blocks and therefore carries no blob service of its own — leaves the plugin to build a blob service over memory piece and key-value stores even though the connection was given real ones. Unreachable while no schema declares a `blobref` column; a `NOTE:` sits at the site.
+
 ## What is wanted
 
 - Every platform passes a persistent piece store beside its block store, with the matching upstream backend: `FilePieceStore` (Node: cadre-cli, cadre-host, provider), `LevelDBPieceStore` (React Native, not yet run on a device upstream), `IndexedDBPieceStore` (browser), `SqlitePieceStore` (NativeScript). Strand nodes also get a persistent `kvStore`, which the peer-join-backfill NOTE already asks for.

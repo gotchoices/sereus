@@ -567,10 +567,18 @@ async function registerStrandPlugins(
 	};
 	if (strand.resolvedTransactor === 'local' && strand.storage) {
 		const storage = strand.storage;
-		// NOTE: the key name is load-bearing and nothing checks it. `pluginConfig` is a
-		// `Record<string, unknown>` upstream reads by name, and a name it does not know is ignored
-		// without a word — the `local` transactor then quietly keeps every write in memory. Pinned by
-		// `plugin.spec.ts` → "writes through the storage it was handed".
+		// NOTE: the key name is load-bearing and nothing in the type system stands behind it.
+		// `pluginConfig` is a `Record<string, unknown>` upstream reads by name, and a name it does not
+		// know is ignored without a word — the `local` transactor then quietly keeps every write in a
+		// memory store of its own. Pinned by every warm-restart case on the `local` transactor, since
+		// each loses its second session's rows: `plugin.spec.ts` → "keeps its rows apart from the strand
+		// table, and across a warm restart", and the two reopen cases in `local-transactor.e2e.spec.ts`.
+		// NOTE: passed on the `local` transactor only, so a `network` connection over a CLIENT node
+		// (`servesBlocks: false`, which holds no blocks and so carries no blob service) leaves the
+		// plugin to build its blob service over memory piece and key-value stores rather than these.
+		// Unreachable today — no schema in this repository declares a `blobref` column, so no blob
+		// service is ever built; if one does, pass the storage whatever the transactor
+		// (ticket `feat-strand-blobs-persist`).
 		pluginConfig.storageFactory = () => storage;
 	}
 	// NOTE: `cost_profile` is left at upstream's default, `distributed` on the network transactor. A

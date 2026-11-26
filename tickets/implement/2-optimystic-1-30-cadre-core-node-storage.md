@@ -42,6 +42,8 @@ A hibernated strand therefore **keeps** its storage handle, and a resume reuses 
 
 Delete the deprecated, Node-only `getStrandStoragePath` with it (exported from `src/index.ts`, called by nothing but its own spec). It is a filesystem path helper for the layout this change replaces.
 
+Also re-export `cohortOutOfSpaceOf`, and the `CohortOutOfSpaceError` type beside it, from `src/index.ts` — beside `appSchemaRefusalOf` and for the same reason (added by the review of ticket `optimystic-1-30-plugin-node-storage`). That ticket added the finder to `@serfab/quereus-plugin-sereus` and `docs/strands/writes.md` tells an app to use it, but the apps reach Sereus through this package: `reference-app-rn` declares neither the plugin nor `@optimystic/db-core`, so today it cannot name the error a failed write carries. One line, no behaviour.
+
 ## The read cache stays cadre-core's, through upstream's helper
 
 `wrapStorageWithCache` / `disposeStorageCache` (`packages/quereus-plugin-sereus/src/cached-storage.ts`) are replaced by upstream's `withReadCache(storage, label)` from `@optimystic/db-p2p`, called on `storage.blocks` at the two seams that resolve a scope's storage, with the returned lease held for the scope's lifetime and released when the scope stops. Then the module and `packages/quereus-plugin-sereus/test/cached-storage.spec.ts` are deleted, and its export removed from the plugin's root.

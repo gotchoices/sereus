@@ -1,4 +1,5 @@
 import { CohortOutOfSpaceError } from '@optimystic/db-core';
+import { causeOf } from './cause-chain.js';
 
 /**
  * The {@link CohortOutOfSpaceError} `err` is or wraps, walking `cause`, so the layers Quereus and the
@@ -10,10 +11,5 @@ import { CohortOutOfSpaceError } from '@optimystic/db-core';
  * this classifies and wraps nothing (docs/strands/writes.md → "A write the cohort has no room for").
  */
 export function cohortOutOfSpaceOf(err: unknown): CohortOutOfSpaceError | undefined {
-	for (let at = err; at instanceof Error; at = at.cause) {
-		if (at instanceof CohortOutOfSpaceError) {
-			return at;
-		}
-	}
-	return undefined;
+	return causeOf(err, CohortOutOfSpaceError);
 }

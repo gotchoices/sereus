@@ -2,6 +2,14 @@
  * Wrap an embedder-supplied `IRawStorage` in `@optimystic/db-p2p`'s write-through
  * raw-storage cache (`CachedRawStorage`) before handing it to a node or transactor.
  *
+ * NOTE: this package no longer calls it. `composeStrand` hands its storage on unwrapped since
+ * Optimystic 1.30 put a leased `withReadCache` in front of `blocks` in both consumers below it
+ * (ticket `optimystic-1-30-plugin-node-storage`), so every mention of `composeStrand` below
+ * describes what cadre-core's two seams — `cadre-node.ts` and `strand-instance-manager.ts`, the only
+ * callers left — still do through this module. They move to `withReadCache` and this module is
+ * deleted in ticket `2-optimystic-1-30-cadre-core-node-storage`, which is also what retires the
+ * reason given at the bottom for keeping a count of our own.
+ *
  * Why: bringing a control database or strand up is raw-storage-operation bound —
  * uncached, a cold start re-reads the same handful of blocks ~2000 times (see the
  * budget history in cadre-core's `test/control-start-storage-op-budget.spec.ts` and

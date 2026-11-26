@@ -8,8 +8,13 @@ import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage
  * single rule the module doc states: **one live cache per backend**. Two caches over
  * one store would each miss the other's writes (upstream `docs/storage.md` Invariant
  * 1), so the memo is not an optimisation — it is what makes overlapping call sites
- * safe. cadre-core wraps at its node seams and `composeStrand` wraps again over
- * whatever it is handed; both must land on the same object.
+ * safe. cadre-core wraps at its node seams and passes the wrapper down; both must land on the same
+ * object.
+ *
+ * NOTE: `composeStrand`, which this spec's cases below still name as a second wrapper, stopped
+ * calling the module in ticket `optimystic-1-30-plugin-node-storage` — read every mention of it
+ * here as cadre-core's own seams, the only callers left. Both move to upstream's `withReadCache` and
+ * this spec goes with the module in ticket `2-optimystic-1-30-cadre-core-node-storage`.
  *
  * The wiring itself (which seams call this, with which label) is asserted where the
  * wiring lives — `cadre-core/test/cadre-node-control-node-options.spec.ts` and

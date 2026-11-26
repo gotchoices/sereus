@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
-import { memoryNodeStorage, type NodeStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { readFileSync } from 'node:fs';
 import { parseConfig } from '../src/plugin.js';
@@ -473,46 +473,6 @@ describe('connectToStrand', () => {
 		expect(createLibp2pNode).not.toHaveBeenCalled();
 	});
 
-	it('writes through the storage it was handed, which is the only check on the config key name', async () => {
-		// `storageFactory` is read by name out of a `Record<string, unknown>` upstream: a name it
-		// does not know is ignored without a word, and the `local` transactor then builds its own
-		// `MemoryRawStorage` and quietly keeps every write in memory. No compiler error, no runtime
-		// error, nothing but data that disappears at restart — so this writes a row and proves it
-		// reached the stores this connection was given. `createLibp2pNode` is mocked in this file and
-		// ignores the storage, so the plugin config is the only consumer of it here.
-		const opened = memoryNodeStorage();
-		const writes: string[] = [];
-		const storage: NodeStorage = {
-			...opened,
-			blocks: new Proxy(opened.blocks, {
-				get(target, key, receiver) {
-					const value: unknown = Reflect.get(target, key, receiver);
-					if (typeof value !== 'function') return value;
-					const name = String(key);
-					return (...args: unknown[]) => {
-						if (name.startsWith('save') || name.startsWith('promote')) writes.push(name);
-						return (value as (...a: unknown[]) => unknown).apply(target, args);
-					};
-				},
-			}),
-		};
-
-		const result = await connectToStrand(db, {
-			strandId: 'test-strand-storage-factory',
-			transactor: 'local',
-			storage,
-			schema: 'table Note (Id integer primary key, Body text not null)',
-			schemaVersion: 1,
-		});
-		try {
-			await db.exec(`insert into App.Note (Id, Body) values (1, 'stored')`);
-		} finally {
-			await result.shutdown();
-		}
-
-		expect(writes).not.toEqual([]);
-	});
-
 	it('should stop created node on shutdown', async () => {
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-9',
@@ -583,6 +543,11 @@ describe('an sApp table named like a strand table', () => {
 		// One storage value across both sessions: the second compose hydrates the catalog the
 		// first persisted. `memoryNodeStorage` is a fresh set of stores per call, so it is opened
 		// once and shared rather than opened per session.
+		//
+		// This is also what pins the `storageFactory` plugin-config key name, which nothing in the type
+		// system stands behind (`compose-strand.ts` → the `NOTE:` at that key): under a name upstream
+		// does not know, the `local` transactor silently keeps every write in a memory store of its own,
+		// and the warm session below hydrates nothing.
 		const storage = memoryNodeStorage();
 		const options = { strandId: 'test-strand-same-name', transactor: 'local' as const, storage, schema: APP_SCHEMA, schemaVersion: 1 };
 

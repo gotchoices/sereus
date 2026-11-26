@@ -1,3 +1,5 @@
+import { causeOf } from './cause-chain.js';
+
 /**
  * An sApp schema refused for a reason that does not pass: the schema itself (a seed item, an item the
  * parser skipped, a syntax error, an invalid version), the schema against the tables and rows this node
@@ -36,10 +38,5 @@ export class AppSchemaOutdatedError extends AppSchemaRefusedError {
 
 /** The {@link AppSchemaRefusedError} `err` is or wraps, walking `cause`, so a wrapper added between the apply and the catch cannot hide it. */
 export function appSchemaRefusalOf(err: unknown): AppSchemaRefusedError | undefined {
-	for (let at = err; at instanceof Error; at = at.cause) {
-		if (at instanceof AppSchemaRefusedError) {
-			return at;
-		}
-	}
-	return undefined;
+	return causeOf(err, AppSchemaRefusedError);
 }
