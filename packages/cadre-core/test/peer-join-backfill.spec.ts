@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Libp2p, PeerId } from '@libp2p/interface';
-import { jsonEncodedBytes, MAX_BLOCK_BYTES, type ActionRev, type IBlock, type IPeerNetwork } from '@optimystic/db-core';
+import { jsonEncodedBytes, MAX_BLOCK_BYTES, type ActionRev, type CollectionChangeEvent, type CollectionChangeListener, type IBlock, type IPeerNetwork } from '@optimystic/db-core';
 import { buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import {
   PeerJoinBackfill,
@@ -197,6 +197,34 @@ function makeLibp2p(
 
 function peer(id: string): PeerId {
   return { toString: () => id } as unknown as PeerId;
+}
+
+/**
+ * A fake of Optimystic's storage-wide change feed — the catch-up's second trigger. The feed fires
+ * for every block that LANDS in a node's store, and only a COMMIT carries the committing
+ * collection's chain tail, so the two emitters here differ in exactly the one field the module
+ * discriminates on.
+ */
+function makeChangeFeed() {
+  const listeners = new Set<CollectionChangeListener>();
+  const emit = (event: CollectionChangeEvent) => {
+    for (const listener of [...listeners]) listener(event);
+  };
+  return {
+    subscribe: (listener: CollectionChangeListener) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    /** A commit this node made: `tailId` names the collection's chain tail. */
+    commit(blockIds: string[], rev: number) {
+      emit({ collectionId: 'col', blockIds, actionId: `a-commit-${rev}`, rev, tailId: blockIds[0] });
+    },
+    /** A block landing from someone else's push — a replica-persist carries no tail. */
+    push(blockIds: string[], rev: number) {
+      emit({ collectionId: 'col', blockIds, actionId: `a-push-${rev}`, rev });
+    },
+    listenerCount: () => listeners.size
+  };
 }
 
 interface CapturedPush {
@@ -1014,6 +1042,58 @@ describe('PeerJoinBackfill', () => {
     await until(() => pushes.length === 2);
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(pushes.length).toBe(2); // one whole-store pass per PEER, not per connection
+
+    backfill.stop();
+  });
+
+  it('re-offers a block whose local revision advanced to a caught-up peer that never disconnected, and only that block', async () => {
+    // The hole this trigger closes: an always-on replica that did not sign a commit stayed one
+    // revision behind it for as long as the connection lasted. Connection churn is the only other
+    // trigger, and a peer that never disconnects produces none.
+    const blocks: Record<string, FakeBlock> = { b1: committed('b1', 1), b2: committed('b2', 1), b3: committed('b3', 1) };
+    const feed = makeChangeFeed();
+    const { backfill, pushes, fake } = makeBackfill(blocks, { debounceMs: 5 }, { subscribeStorageChanges: feed.subscribe });
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+    expect(pushes[0]!.ids.sort()).toEqual(['b1', 'b2', 'b3']);
+
+    // The peer stays connected and caught up; this node commits a new revision of one block.
+    blocks.b2 = committed('b2', 2);
+    feed.commit(['b2'], 2);
+
+    await until(() => pushes.length === 2, 500);
+    expect(pushes[1]!.ids).toEqual(['b2']);
+    expect(pushes[1]!.meta?.blockMeta?.b2).toEqual({ rev: 2, actionId: 'a-b2-2' });
+
+    backfill.stop();
+    // The subscription is the module's own and is released with it.
+    expect(feed.listenerCount()).toBe(0);
+  });
+
+  it('acts on a commit but not on a block that merely landed from a push', async () => {
+    // The rule that keeps the two ends from echoing: a node re-offers what IT committed. The feed
+    // fires for a pushed replica too, and acting on that would make a whole-store catch-up of N
+    // blocks bounce all N straight back to its sender.
+    const blocks: Record<string, FakeBlock> = { b1: committed('b1', 1), b2: committed('b2', 1), b3: committed('b3', 1) };
+    const feed = makeChangeFeed();
+    const { backfill, pushes, fake } = makeBackfill(blocks, { debounceMs: 5 }, { subscribeStorageChanges: feed.subscribe });
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    await until(() => pushes.length === 1);
+
+    // b2 arrives from the peer's own push; b3 this node commits itself.
+    blocks.b2 = committed('b2', 2);
+    feed.push(['b2'], 2);
+    blocks.b3 = committed('b3', 2);
+    feed.commit(['b3'], 2);
+
+    // The commit's own delta run is the proof: were the tail-less event acted on too, b2 would
+    // ride along in it.
+    await until(() => pushes.length === 2, 500);
+    expect(pushes[1]!.ids).toEqual(['b3']);
 
     backfill.stop();
   });

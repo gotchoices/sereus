@@ -1299,7 +1299,12 @@ export class StrandInstanceManager {
             // The same prefix the receiver registered its block-transfer handler
             // under — derived from networkName above, never re-spelled here.
             protocolPrefix,
-            reportBlockHeld: node.reportBlockHeld
+            reportBlockHeld: node.reportBlockHeld,
+            // The second trigger: a revision this node commits while a peer stays connected and
+            // caught up is re-offered to it. Only commits are acted on, so a push landing in this
+            // store is not bounced back to the peer that sent it — see the module comment.
+            subscribeStorageChanges: node.storageRepo
+              && ((listener) => node.storageRepo!.onAnyCollectionChange(listener))
           }, {
             // Dial and response deadlines counted in link round trips, not fixed milliseconds:
             // a relayed dial costs a fixed number of exchanges, so a fixed budget has a link

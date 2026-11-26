@@ -2370,6 +2370,7 @@ export class CadreNode implements SAppIdLookup {
     // refuses outright. Guard `resolveControlStorage` on a teardown in flight then.
     const storage = await this.controlBackfillStorage();
     const keyNetwork = (this.controlNode as Libp2pNodeWithRepo).keyNetwork;
+    const storageRepo = (this.controlNode as Libp2pNodeWithRepo).storageRepo;
     if (!storage || !keyNetwork) {
       log('Control peer-join block catch-up is inert: %s',
         !storage ? 'disabled, or no storage configured' : 'control node exposes no keyNetwork');
@@ -2388,6 +2389,10 @@ export class CadreNode implements SAppIdLookup {
       // used, never re-spelled here.
       protocolPrefix: `/optimystic/${networkName}`,
       reportBlockHeld: (this.controlNode as Libp2pNodeWithRepo).reportBlockHeld,
+      // The second trigger: a revision this node commits while a peer stays connected and caught
+      // up is re-offered to it. Only commits are acted on, so a push landing in this store is not
+      // bounced back to the peer that sent it — see the module comment.
+      subscribeStorageChanges: storageRepo && ((listener) => storageRepo.onAnyCollectionChange(listener)),
       // The membership snapshot, not {@link isControlNetworkMember}: that predicate admits
       // everyone while the snapshot is empty and admits bootstrap/relay peers outright, and
       // neither may receive the control store.

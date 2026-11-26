@@ -1,6 +1,6 @@
 import debug from 'debug';
 import type { IdentifyResult, Libp2p, PeerId } from '@libp2p/interface';
-import { jsonEncodedBytes, MAX_BLOCK_BYTES, type ActionId, type ActionRev, type BlockId, type IBlock, type IPeerNetwork } from '@optimystic/db-core';
+import { jsonEncodedBytes, MAX_BLOCK_BYTES, type ActionId, type ActionRev, type BlockId, type CollectionChangeListener, type IBlock, type IPeerNetwork } from '@optimystic/db-core';
 import { BlockTransferClient, buildBlockTransferProtocol, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 import { peerJoinPushBudget } from './link-budget.js';
 import type { Libp2pNodeWithRepo } from './types.js';
@@ -15,6 +15,29 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // alone has exactly one holder forever without this (named collection-header blocks are
 // written once, at collection creation, and their revision never moves again — so no later
 // commit ever carries them anywhere).
+//
+// TWO TRIGGERS, because a connection is not the only thing that can leave a peer behind:
+//
+// - A CONNECTION — the `peer:identify` above, or `scheduleConnectedPeers()`. Offers the WHOLE
+//   local store. This is what a peer that is not yet caught up needs.
+// - A COMMIT THIS NODE MADE — {@link PeerJoinBackfillDeps.subscribeStorageChanges}. Offers
+//   exactly the blocks that commit touched, and is the only run that goes ahead for a peer
+//   already marked caught up. Without it an always-on storage replica that did not sign a
+//   commit sat a revision behind it for as long as the connection lasted: it never
+//   disconnected, so it never got another identify, and nothing else covers that case (the
+//   rebalance reaction is off wherever this module is armed, the under-replication ledger
+//   records a shortfall only against the commit's own resolved cluster, and read repair is a
+//   read-side path a replica running no app never takes). The per-block skip rules under
+//   "WHAT IS PUSHED" were already right for it — a block the peer accepted at rev 4 is offered
+//   again once the local revision reaches 5 — so only the scheduling was missing.
+//
+// The rule that keeps the second trigger from echoing: a node re-offers what IT COMMITTED, and a
+// block that arrived by push belongs to its pusher to propagate. The store's change feed fires
+// for every block that LANDS, a commit or a push, so without the rule a whole-store catch-up of
+// N blocks into a peer would make that peer offer all N straight back. The discriminator is the
+// event's `tailId` — the committing collection's chain tail, which Optimystic's `StorageRepo`
+// stamps on a commit's event and on nothing else (neither a replica persisted from someone
+// else's push nor a read-driven promotion carries one).
 //
 // A peer this instance has never started a run for is run at once; later schedules for it wait
 // out `debounceMs`. The joining machine's first-sync gate waits for this push rather than
@@ -123,7 +146,10 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // nothing at all: the connection simply never appears and only a DEBUG log mentions a dial
 // timeout.
 //
-// WHAT IS PUSHED: each block once per peer. Per peer, this module remembers for the runtime the
+// WHAT IS PUSHED: each block REVISION once per peer. A connection-driven run considers the whole
+// local store; a commit-driven one considers only the blocks it owes that peer. Both apply the
+// same per-block skips, so a peer that already holds a revision is never sent it twice and a
+// revision that advanced is sent once more. Per peer, this module remembers for the runtime the
 // revision of each block the peer accepted and the revision it refused ({@link PeerMemo}). A
 // refusal is the receiver's `missing` list: a payload it cannot parse, a block it failed to
 // persist, or a revision whose retained commit proof this node does not hold (a receiver running the default
@@ -157,8 +183,10 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // remembered per block. It stays caught up until its last connection closes
 // (`peer:disconnect`): `peer:identify` churn for a connected, caught-up peer is dropped before
 // any work, and a reconnect re-runs past the debounce, pushing only what the memo and the
-// proofs do not cover. {@link PeerJoinBackfill.forceCatchUpPeer} runs past `done` too, with the
-// same skips.
+// proofs do not cover. Two things run past `done`, with the same per-block skips: a
+// commit-driven run, which offers only the blocks it owes that peer, and
+// {@link PeerJoinBackfill.forceCatchUpPeer}, which offers the whole store. Neither clears
+// `done` — `forgetCaughtUp` keeps sole ownership of it.
 //
 // NOTE: the protocol check happens once — either when a connection's `peer:identify` fires,
 // or, for a peer already connected when this instance starts, when `scheduleConnectedPeers()`
@@ -294,11 +322,28 @@ export interface PeerJoinBackfillDeps {
    */
   reportBlockHeld?: Libp2pNodeWithRepo['reportBlockHeld'];
   /**
+   * Subscribe `listener` to every commit landing in this network's store and return the
+   * unsubscribe — the second trigger, alongside `peer:identify`: a revision that advances while a
+   * peer stays connected and caught up is re-offered to it. Both construction sites pass the
+   * node's `storageRepo.onAnyCollectionChange`. Absent (a node without one, a test double), the
+   * catch-up is connection-triggered only.
+   */
+  subscribeStorageChanges?: (listener: CollectionChangeListener) => () => void;
+  /**
    * Test seam: build the per-peer push client. Defaults to a real
    * `BlockTransferClient` over {@link peerNetwork} + {@link protocolPrefix}.
    */
   createPushClient?: (peerId: PeerId) => PeerJoinBackfillPushClient;
 }
+
+/**
+ * Which blocks one run offers. `whole` enumerates the local store — the connection-triggered
+ * run, and what a peer not yet caught up needs. `delta` offers exactly the blocks this node
+ * committed since the peer's last clean run, and is the only run that goes ahead for a peer
+ * already marked {@link PeerJoinBackfill.done}. Decided when a run FIRES, not when it is
+ * scheduled, so one scheduling path serves both triggers.
+ */
+type RunKind = 'whole' | 'delta';
 
 /** What one peer's catch-up actually did. Returned for tests and logged at the end of each run. */
 export interface PeerJoinBackfillResult {
@@ -433,10 +478,18 @@ export class PeerJoinBackfill {
   /** Per-peer, per-block verdicts from push replies; see {@link PeerMemo}. */
   private readonly memos = new Map<string, PeerMemo>();
   /**
-   * Peers a run has been started for. A peer not in it is run at once on its first schedule;
-   * later schedules wait out `debounceMs`.
+   * Peers a run has been started for, each with the id to dial it by. A peer not in it is run at
+   * once on its first schedule; later schedules wait out `debounceMs`. The id is kept because the
+   * commit-driven trigger has only a block id to work from and must reach every peer it has
+   * contacted without waiting for that peer's next connection event.
    */
-  private readonly contacted = new Set<string>();
+  private readonly contacted = new Map<string, PeerId>();
+  /**
+   * Per peer, the blocks THIS node has committed since that peer's last clean run — the work a
+   * `delta` run offers. Size is bounded the way {@link PeerMemo} is: at most one entry per distinct
+   * block id in the store, per peer ever contacted.
+   */
+  private readonly owed = new Map<string, Set<BlockId>>();
   /**
    * Peers with a catch-up currently running, each with that run (suppresses concurrent
    * duplicates; {@link forceCatchUpPeer} waits on the run).
@@ -465,6 +518,9 @@ export class PeerJoinBackfill {
   private readonly warned = new Set<string>();
   private readonly onPeerIdentify: (evt: CustomEvent<IdentifyResult>) => void;
   private readonly onPeerDisconnect: (evt: CustomEvent<PeerId>) => void;
+  private readonly onStorageChange: CollectionChangeListener;
+  /** Set while subscribed to {@link PeerJoinBackfillDeps.subscribeStorageChanges}. */
+  private unsubscribeStorage: (() => void) | undefined;
   private loggedNoListBlockIds = false;
 
   constructor(private readonly deps: PeerJoinBackfillDeps, config?: PeerJoinBackfillConfig) {
@@ -480,6 +536,79 @@ export class PeerJoinBackfill {
     this.onPeerDisconnect = (evt) => {
       this.forgetCaughtUp(evt.detail.toString());
     };
+    this.onStorageChange = (event) => this.noteCommitted(event.tailId, event.blockIds);
+  }
+
+  /**
+   * The commit-driven trigger: a revision this node just committed is owed to every peer this
+   * instance has contacted, and scheduled for the ones it can still reach. Runs inside
+   * Optimystic's synchronous change dispatch, so it does map work and arms a timer, and nothing
+   * more — no await, and no push, which belongs to the run the timer fires.
+   *
+   * `tailId` is the discriminator that keeps this from echoing. The store's change feed fires for
+   * every block that LANDS, a commit or a push, and only a commit carries the committing
+   * collection's chain tail; a replica persisted from someone else's push, and a read-driven
+   * promotion, carry none. So the rule is: a node re-offers what IT committed, and a block that
+   * arrived by push belongs to its pusher to propagate. Without the filter, a whole-store
+   * catch-up of N blocks into a peer would make that peer offer all N straight back.
+   */
+  private noteCommitted(tailId: BlockId | undefined, blockIds: readonly BlockId[]): void {
+    if (this.stopped || tailId === undefined || blockIds.length === 0) return;
+    for (const [key, peerId] of this.contacted) {
+      const owed = this.owedFor(key);
+      for (const blockId of blockIds) {
+        owed.add(blockId);
+      }
+      // Dial nobody this trigger would not otherwise reach. A peer that went away has no
+      // connection to push over and its reconnect runs the whole store anyway; a peer whose run is
+      // in flight is DEFERRED by `schedulePeer` rather than dialed, which is how a commit landing
+      // mid-run still gets carried once that run ends.
+      //
+      // NOTE: a CONNECTED peer that is not caught up is scheduled from here too, and fires a whole
+      // run rather than a delta — which on the control network means a `authorizePeer` check per
+      // commit burst for a connected peer the gate keeps denying. Deliberate (it picks up an
+      // authorization sooner than the next identify would) and cheap, because that gate is an
+      // in-memory set lookup and the run ends at the denial without dialing. If a node ever holds
+      // many denied-but-connected peers under a steady write stream, restrict this to
+      // `runFor(key) === 'delta'`.
+      if (this.inFlight.has(key) || this.isConnected(peerId)) {
+        this.schedulePeer(peerId, { keepPendingTimer: true });
+      }
+    }
+  }
+
+  /** This peer's owed-block set, created empty on first use. */
+  private owedFor(key: string): Set<BlockId> {
+    let owed = this.owed.get(key);
+    if (!owed) {
+      owed = new Set();
+      this.owed.set(key, owed);
+    }
+    return owed;
+  }
+
+  /**
+   * Which run, if any, a schedule for `key` should fire — the decision deferred from schedule
+   * time to fire time, so the commit-driven and connection-driven triggers share one scheduling
+   * path and one set of in-flight, re-arm and backoff bookkeeping.
+   */
+  private runFor(key: string): RunKind | 'none' {
+    if (!this.done.has(key)) return 'whole';
+    return (this.owed.get(key)?.size ?? 0) > 0 ? 'delta' : 'none';
+  }
+
+  /**
+   * Drop from `key`'s owed set exactly the ids a clean run worked from — never the ids a commit
+   * added while it ran, which the run's offer may already have passed and which therefore need a
+   * run of their own.
+   */
+  private clearOwed(key: string, worked: ReadonlySet<BlockId>): void {
+    const owed = this.owed.get(key);
+    if (!owed) return;
+    for (const id of worked) {
+      owed.delete(id);
+    }
+    if (owed.size === 0) this.owed.delete(key);
   }
 
   /**
@@ -487,13 +616,17 @@ export class PeerJoinBackfill {
    * stored protocols already name this network's block-transfer protocol — a peer that does
    * not speak it (a bare circuit relay, a bootstrap node) is never scheduled at all. Also
    * subscribes to `peer:disconnect`, so a peer caught up before it went away is run again on
-   * its return. See {@link speaksBlockTransfer} and the module comment.
+   * its return, and to this network's own store
+   * ({@link PeerJoinBackfillDeps.subscribeStorageChanges}), so a revision committed while a peer
+   * stays connected and caught up is re-offered to it. See {@link speaksBlockTransfer},
+   * {@link noteCommitted} and the module comment.
    */
   start(): void {
     if (this.started || this.stopped || !this.config.enabled) return;
     this.started = true;
     this.deps.libp2p.addEventListener('peer:identify', this.onPeerIdentify);
     this.deps.libp2p.addEventListener('peer:disconnect', this.onPeerDisconnect);
+    this.unsubscribeStorage = this.deps.subscribeStorageChanges?.(this.onStorageChange);
     // A runtime rebuilt over live connections (resumeStrand) never sees their peer:identify —
     // it already fired before this instance existed, but its result is persisted in the peer
     // store — so walk what is already connected once.
@@ -510,6 +643,8 @@ export class PeerJoinBackfill {
       this.deps.libp2p.removeEventListener('peer:identify', this.onPeerIdentify);
       this.deps.libp2p.removeEventListener('peer:disconnect', this.onPeerDisconnect);
     }
+    this.unsubscribeStorage?.();
+    this.unsubscribeStorage = undefined;
     for (const timer of this.timers.values()) {
       clearTimeout(timer);
     }
@@ -580,13 +715,20 @@ export class PeerJoinBackfill {
   }
 
   /**
-   * Entry point for connection churn: one run per peer per settle window, except that a peer
+   * The one entry point both triggers use: one run per peer per settle window, except that a peer
    * never run for is run at once (on a zero-delay timer, so a burst of identify events in one
-   * turn still collapses, and no work happens inside the libp2p event dispatch).
+   * turn still collapses, and no work happens inside the libp2p or storage event dispatch). The
+   * run's KIND is decided when the timer fires ({@link runFor}), not here.
+   *
+   * `keepPendingTimer` is what the commit-driven trigger passes. Re-setting an armed timer is the
+   * right settle behaviour for connection churn, which is a burst that should collapse to one run
+   * at its end; under a steady write stream it would postpone delivery indefinitely instead. The
+   * owed set grows while the already-armed timer runs down, and the run that fires carries
+   * everything in it.
    */
-  private schedulePeer(peerId: PeerId): void {
+  private schedulePeer(peerId: PeerId, opts: { keepPendingTimer?: boolean } = {}): void {
     const key = peerId.toString();
-    if (this.stopped || this.done.has(key)) return;
+    if (this.stopped || this.runFor(key) === 'none') return;
     if (this.inFlight.has(key)) {
       // Defer rather than drop: the running pass may already be past its gate check (or
       // past the block this schedule was meant to carry), so replay it when that pass ends.
@@ -600,7 +742,10 @@ export class PeerJoinBackfill {
     const retryAt = this.retryAfter.get(key);
     if (retryAt !== undefined && Date.now() < retryAt) return;
     const existing = this.timers.get(key);
-    if (existing) clearTimeout(existing);
+    if (existing) {
+      if (opts.keepPendingTimer) return;
+      clearTimeout(existing);
+    }
     const delayMs = this.contacted.has(key) ? this.config.debounceMs : 0;
     this.timers.set(key, setTimeout(() => {
       this.timers.delete(key);
@@ -615,10 +760,11 @@ export class PeerJoinBackfill {
    */
   async catchUpPeer(peerId: PeerId): Promise<PeerJoinBackfillResult> {
     const key = peerId.toString();
-    if (this.stopped || this.done.has(key) || this.inFlight.has(key)) {
+    const kind = this.runFor(key);
+    if (this.stopped || kind === 'none' || this.inFlight.has(key)) {
       return emptyResult();
     }
-    return await this.trackRun(peerId);
+    return await this.trackRun(peerId, kind);
   }
 
   /**
@@ -641,17 +787,17 @@ export class PeerJoinBackfill {
     if (this.stopped) {
       return emptyResult();
     }
-    return await this.trackRun(peerId);
+    return await this.trackRun(peerId, 'whole');
   }
 
   /**
    * Register one run in {@link inFlight} before its first await, so no second run for the
    * peer can start beside it, and replay a schedule that arrived while it ran.
    */
-  private async trackRun(peerId: PeerId): Promise<PeerJoinBackfillResult> {
+  private async trackRun(peerId: PeerId, kind: RunKind): Promise<PeerJoinBackfillResult> {
     const key = peerId.toString();
-    this.contacted.add(key);
-    const run = this.settleRun(peerId);
+    this.contacted.set(key, peerId);
+    const run = this.settleRun(peerId, kind);
     this.inFlight.set(key, run);
     try {
       return await run;
@@ -667,10 +813,14 @@ export class PeerJoinBackfill {
   }
 
   /** One run and what follows from its outcome: the memo, or a backoff re-arm. Never rejects. */
-  private async settleRun(peerId: PeerId): Promise<PeerJoinBackfillResult> {
+  private async settleRun(peerId: PeerId, kind: RunKind): Promise<PeerJoinBackfillResult> {
     const key = peerId.toString();
+    // Snapshot the owed set before the first await — a `delta` run's whole id source, and for
+    // either kind the set a clean run is allowed to clear. A commit landing DURING the run stays
+    // owed, because the offer may already have passed that block at its older revision.
+    const worked = new Set(this.owed.get(key) ?? []);
     try {
-      const { result, clean, pushFailed } = await this.runCatchUp(peerId);
+      const { result, clean, pushFailed } = await this.runCatchUp(peerId, kind, worked);
       // NOTE: a run that hit `maxBlocks` is still "clean" and still marks the peer caught up,
       // so no `peer:identify` run reaches the tail past the ceiling. Loud in the log below
       // (capped > 0). Blocks the peer is known to hold are not offered and do not count toward
@@ -678,6 +828,7 @@ export class PeerJoinBackfill {
       // realistically exceed maxBlocks, leave a capped run out of `done` so each identify run
       // sends the next `maxBlocks`.
       if (clean && !this.stopped) {
+        this.clearOwed(key, worked);
         // A disconnect mid-run cleared `done` already; re-adding it would drop the reconnect.
         // Not judged by `isConnected`: hand-driven runs target peers with no connection.
         if (!this.disconnectedInFlight.has(key)) {
@@ -695,8 +846,8 @@ export class PeerJoinBackfill {
         // owns its own retry policy and must not be left holding a background timer.
         this.scheduleRetryWithBackoff(peerId);
       }
-      log('[%s] catch-up peer=%s offered=%d alreadyHeld=%d accepted=%d rejected=%d uncommitted=%d unmaterialized=%d capped=%d oversized=%d denied=%s done=%s',
-        this.deps.label, key, result.offered, result.alreadyHeld, result.accepted, result.rejected.length,
+      log('[%s] catch-up peer=%s kind=%s offered=%d alreadyHeld=%d accepted=%d rejected=%d uncommitted=%d unmaterialized=%d capped=%d oversized=%d denied=%s done=%s',
+        this.deps.label, key, kind, result.offered, result.alreadyHeld, result.accepted, result.rejected.length,
         result.uncommitted, result.unmaterialized, result.capped, result.oversized.length, result.denied, clean);
       return result;
     } catch (error) {
@@ -789,9 +940,8 @@ export class PeerJoinBackfill {
    * `pushFailed` = at least one push THREW, which is the only non-clean outcome a retry can
    * change; the others are verdicts (denied, inert store).
    */
-  private async runCatchUp(peerId: PeerId): Promise<{ result: PeerJoinBackfillResult; clean: boolean; pushFailed: boolean }> {
+  private async runCatchUp(peerId: PeerId, kind: RunKind, owed: ReadonlySet<BlockId>): Promise<{ result: PeerJoinBackfillResult; clean: boolean; pushFailed: boolean }> {
     const result = emptyResult();
-    const { storage } = this.deps;
     const key = peerId.toString();
 
     // The membership gate, judged at push time (never at schedule time — authorization can
@@ -811,11 +961,8 @@ export class PeerJoinBackfill {
       }
     }
 
-    if (!storage.listBlockIds) {
-      if (!this.loggedNoListBlockIds) {
-        this.loggedNoListBlockIds = true;
-        log('[%s] raw storage does not implement listBlockIds(); backfill is inert', this.deps.label);
-      }
+    const blockIds = this.blockIdsFor(kind, owed);
+    if (!blockIds) {
       return { result, clean: false, pushFailed: false };
     }
 
@@ -866,7 +1013,7 @@ export class PeerJoinBackfill {
       }
     };
 
-    for await (const blockId of storage.listBlockIds()) {
+    for await (const blockId of blockIds) {
       if (this.stopped) break;
       if (result.offered >= this.config.maxBlocks) {
         // Past the ceiling: count what is left (id enumeration only — no more reads or
@@ -905,6 +1052,25 @@ export class PeerJoinBackfill {
     }
 
     return { result, clean: !chunkFailed, pushFailed: chunkFailed };
+  }
+
+  /**
+   * The ids one run offers: the whole local store, or exactly the blocks this node committed since
+   * the peer's last clean run. `undefined` — the inert-store verdict a retry cannot change — only
+   * for a whole run over storage that implements no `listBlockIds`; a delta run names its own ids
+   * and must not be refused by a store that cannot enumerate.
+   */
+  private blockIdsFor(kind: RunKind, owed: ReadonlySet<BlockId>): AsyncIterable<BlockId> | Iterable<BlockId> | undefined {
+    if (kind === 'delta') return owed;
+    const { storage } = this.deps;
+    if (!storage.listBlockIds) {
+      if (!this.loggedNoListBlockIds) {
+        this.loggedNoListBlockIds = true;
+        log('[%s] raw storage does not implement listBlockIds(); whole-store catch-up is inert', this.deps.label);
+      }
+      return undefined;
+    }
+    return storage.listBlockIds();
   }
 
   /**
