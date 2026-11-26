@@ -21,10 +21,10 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * exactly like `control-start-storage-op-budget.spec.ts`, whose rationale for
  * counting operations rather than wall clock applies verbatim here.
  *
- * Backed by `MemoryRawStorage` deliberately: operation counts are a property of
+ * Backed by `memoryNodeStorage()` deliberately: operation counts are a property of
  * the storage layer's call pattern, not the backend — established by
- * `tickets/complete/control-start-storage-op-budget.md`, where `MemoryRawStorage`
- * and `FileRawStorage` agreed on the same figure. So no file-backed arm here.
+ * `tickets/complete/control-start-storage-op-budget.md`, where memory
+ * and file storage agreed on the same figure. So no file-backed arm here.
  *
  * ONLY THE STRAND'S BLOCKS ARE COUNTED. `CadreNodeConfig.storage.open`
  * is called with the party's control scope key for the control node and with the
@@ -374,10 +374,10 @@ describe('solo strand write budget', () => {
 		// is the printed per-phase milliseconds, judged against the a-priori ~250 ms
 		// per-insert threshold in the retirement ticket, not here.
 		expect(cost.insert.ms / ROW_COUNT,
-			`a solo insert averaged ${Math.round(cost.insert.ms / ROW_COUNT)}ms over MemoryRawStorage — far beyond a hang-free run`
+			`a solo insert averaged ${Math.round(cost.insert.ms / ROW_COUNT)}ms over memory storage — far beyond a hang-free run`
 		).toBeLessThan(LOOSE_MS_PER_OP);
 		expect(cost.select.ms / ROW_COUNT,
-			`a solo select averaged ${Math.round(cost.select.ms / ROW_COUNT)}ms over MemoryRawStorage — far beyond a hang-free run`
+			`a solo select averaged ${Math.round(cost.select.ms / ROW_COUNT)}ms over memory storage — far beyond a hang-free run`
 		).toBeLessThan(LOOSE_MS_PER_OP);
 	}, 180_000);
 });

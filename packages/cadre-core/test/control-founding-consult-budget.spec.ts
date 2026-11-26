@@ -45,7 +45,7 @@ import {
  * the idle reconcile pass measure 0: a consult there means a control read reached a block this
  * node does not hold. If any figure moves, find out why before re-pinning.
  *
- * **Phases**, on one solo `CadreNode` (`nodeClass: 'device'`, one `MemoryRawStorage`
+ * **Phases**, on one solo `CadreNode` (`nodeClass: 'device'`, one `memoryNodeStorage()`
  * per storage id), each measured from a zeroed counter: cold `start()`; genesis
  * (`ensureOwnerKey` with a generated owner key and `useOwnerSigner` to wire it, the
  * production calls); `foundStrand`, with the
@@ -87,7 +87,7 @@ const LIFECYCLE_TIMEOUT_MS = 60_000;
 /**
  * A single control read or write; a hang detector. `ensureOwnerKey` founds the party and costs 36
  * durable commits rather than one, and keeps this bound for the reason the same call keeps it in
- * `control-database-offline-peers.spec.ts`: over `MemoryRawStorage` that is 0.1–0.35 s.
+ * `control-database-offline-peers.spec.ts`: over memory storage that is 0.1–0.35 s.
  */
 const OP_TIMEOUT_MS = 30_000;
 

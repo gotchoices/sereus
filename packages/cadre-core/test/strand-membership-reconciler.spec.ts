@@ -47,7 +47,7 @@ const DEAD_INVITE_LINE = /staged invitation is dead/;
  * the redemption under a pending party key, and the scheduler wiring.
  *
  * Every DB-backed test runs against a REAL closed strand DB on the local transactor
- * (libp2p node + MemoryRawStorage) via the shared helpers — the same apply/DML/
+ * (libp2p node + memoryNodeStorage()) via the shared helpers — the same apply/DML/
  * deferred-constraint path `StrandDatabase` uses — with founder and joiner as two
  * distinct parties sharing one replica, which is exactly what a joiner that has
  * synced the founder's rows sees. The ARMING of this loop (which strands get one,

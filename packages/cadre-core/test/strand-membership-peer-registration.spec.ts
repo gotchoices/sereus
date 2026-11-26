@@ -22,7 +22,7 @@ import {
  * Component coverage for `MemberPeer` registration and removal — a member binding
  * (and unbinding) its own network nodes, self-signed, with a manager-cleanup escape
  * hatch for orphaned bindings. Every test runs against a REAL closed strand DB on
- * the local transactor (libp2p node + MemoryRawStorage, no peers consulted)
+ * the local transactor (libp2p node + memoryNodeStorage(), no peers consulted)
  * via `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *

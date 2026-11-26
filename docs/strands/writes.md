@@ -100,7 +100,7 @@ What an app sees depends on whether the strand is in offline mode.
 - **Outside offline mode the write throws, once.** It is not retried, because nothing about it is wrong: reading again and writing again would send the same bytes to the same full machines. The error is Optimystic's `CohortOutOfSpaceError`, which names the full machines by strand peer id in `peerIds`. Optimystic gives it no SQL error of its own, so an app that catches a failed write finds it with `cohortOutOfSpaceOf(error)` (from `@serfab/quereus-plugin-sereus`), which walks the wrapping errors Quereus and the Optimystic plugin add. Nothing was saved anywhere.
 - **In offline mode nothing throws.** The commit already resolved when it was saved on this machine, and the entry stays `queued` with `waitingFor: 'cohort'`, the refusal as its `lastError`, retried on the queue's usual backoff. It does not count as a failure the queue could not classify, so a strand whose members are full does not look like a strand whose members are broken.
 
-What clears it is on the machines, not in the app: their operators giving them more space, or those machines handing ranges to peers with room, which a machine short of space does on its own. An app can show the operator which machines are full, which is what `peerIds` is for.
+What clears it is on the machines, not in the app: their operators giving them more space. A full machine does not hand its ranges to peers with room, because Optimystic's ring shedding is driven by a rebalance reaction every Sereus node turns off wherever it arms its own peer-join catch-up ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)). An app can show the operator which machines are full, which is what `peerIds` is for.
 
 ## Offline mode
 

@@ -1,5 +1,5 @@
 description: The NativeScript reference chat can now queue messages while it has no one to send them to, but there is nothing on screen for it: no switch to turn offline sending on, no line saying how many messages are waiting, and no way to see or drop one that has not gone out.
-architecture: docs/strands/writes.md
+architecture: docs/platforms/reference-apps.md#messages-not-yet-delivered
 files: packages/reference-app-ns/app/settings/settings-page.xml, packages/reference-app-ns/app/settings/settings-view-model.ts, packages/reference-app-ns/app/chat/chat-page.xml, packages/reference-app-ns/app/chat/chat-page.ts, packages/reference-app-ns/src/chat-vm.ts, packages/reference-app-ns/src/chat-operations.ts, packages/reference-app-ns/src/test-ids.ts, docs/platforms/reference-apps.md
 tradeoffs: NativeScript is a reference platform with no shipping app behind it, and the other two reference apps already demonstrate every part of this surface, so a maintainer may reasonably leave NativeScript without it.
 ----
@@ -10,7 +10,7 @@ tradeoffs: NativeScript is a reference platform with no shipping app behind it, 
 
 The platform half landed with the Optimystic 1.30 adoption. `ns-edge-platform.ts` implements `offlineJournal(scope)` over the scope's own SQLite database — upstream's own key-value store, through upstream's own factory, so the two questions this ticket used to ask before building (whether that store flushes, and whether the block store would read the journal's keys as blocks) are answered by construction: Optimystic declares the journal's key prefix among the node's own namespaces precisely so one store serves both. `CadreNode.setStrandOfflineMode` no longer refuses on NativeScript, and a NativeScript strand now builds its offline queue even in online mode.
 
-What is left is the reference chat's own surface. `docs/platforms/reference-apps.md` → "Offline mode" describes it for the other two apps and already records this app's absence of it.
+What is left is the reference chat's own surface. `docs/platforms/reference-apps.md` → "Messages not yet delivered" describes it for the other two apps, and its limits paragraph already records this app's absence of it.
 
 ## What is wanted
 
@@ -23,4 +23,4 @@ The same four things the React Native and browser chats show, so the three refer
 
 Restoring a mark after a restart needs the chat's own node-local record linking a queued transaction id back to the message it holds; the other two apps keep one (`queued-messages.ts`), and it is the app's record, not the kit's.
 
-When this lands, the limits paragraph in `docs/platforms/reference-apps.md` loses its NativeScript clause.
+When this lands, the limits paragraph under `docs/platforms/reference-apps.md` → "Messages not yet delivered" loses its NativeScript clause.

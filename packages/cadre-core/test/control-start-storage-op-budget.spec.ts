@@ -39,10 +39,12 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * asserted, so an in-memory backend keeps the spec fast and free of filesystem noise
  * while issuing exactly the same operations a file backend would. It did when the
  * pre-cache figure was cross-checked: the 1541 of 2026-08-12 was identical over
- * `FileRawStorage`. (The counter sits UNDER cadre-core's cache — `CountingRawStorage`
- * is not a `MemoryRawStorage`, so the wrap applies — which is the point: it counts
- * what would reach the device's disk. It fronts the BLOCKS only, which is the one store
- * the cache is leased over; the node's key-value records and blob pieces are not counted.)
+ * `FileRawStorage`. (The counter sits UNDER cadre-core's read-cache wrap — a memory
+ * block store passes through unwrapped and `CountingRawStorage` is not recognised as
+ * one, so the wrap applies — which is the point: it counts what would reach the
+ * device's disk. It fronts the `blocks` of the `NodeStorage` the node is handed, which
+ * is the one store the cache is leased over; the node's key-value records and blob
+ * pieces go to the same memory store uncounted.)
  *
  * The counts reproduce exactly — three consecutive runs gave byte-identical
  * per-method breakdowns — which is what makes a budget this close to the measurement
@@ -208,7 +210,7 @@ const WARM: Budget = {
  * 750–820 ms (2026-10-20) to 2.0–2.9 s on `FileRawStorage`, which is the failure mode the head
  * comment describes: wall clock stays green on an idle machine while the device-facing behaviour
  * gets worse. The counts are deterministic — byte-identical across six runs, and the same over
- * `MemoryRawStorage` and `FileRawStorage` — which is what makes a budget this close safe.
+ * memory and file storage — which is what makes a budget this close safe.
  *
  * **The barrier arm is not optional padding here.** On disk the barriers ARE the cost: `flush`
  * 183× took 1.4–1.5 s of a 2.1 s run — two per commit, plus roughly one per block written — while
