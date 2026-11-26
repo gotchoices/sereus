@@ -2,7 +2,7 @@ import { afterEach } from 'vitest';
 import debug from 'debug';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
@@ -17,7 +17,7 @@ import type { SAppConfig } from '../src/types.js';
 
 /**
  * Shared setup for the `strand-*.spec.ts` suites: opening a real strand DB
- * (libp2p node + MemoryRawStorage + an optimystic transactor — local by
+ * (libp2p node + in-memory storage + an optimystic transactor — local by
  * default, network on request) via `connectToStrand` — the same path
  * `StrandDatabase` uses — and the small raw-write/read helpers those suites
  * build on.
@@ -125,7 +125,7 @@ export type StrandTransactor = 'local' | 'network';
  */
 export async function openRawStrand(transactor: StrandTransactor = 'local'): Promise<RawStrand> {
   const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
+  const storage = memoryNodeStorage();
   const db = new Database();
   const result = await connectToStrand(db, { strandId, transactor, storage });
   const strand: RawStrand = {

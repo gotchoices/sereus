@@ -7,7 +7,7 @@ In Sereus a **party** is a person or organisation, its **cadre** is the set of m
 ## Prerequisites
 
 - **An ES module project.** The package ships ES modules only. It runs on Node.js 20.19 or later, in browsers, and in React Native and NativeScript apps.
-- **A block store for the platform.** cadre-core stores data through Optimystic's `IRawStorage` interface and does not bundle a durable implementation; see [Storage provider](#storage-provider).
+- **Storage for the platform.** cadre-core stores data through Optimystic's `NodeStorage` and does not bundle a durable implementation; see [Storage](#storage).
 
 ## Install
 
@@ -96,7 +96,7 @@ An app on a phone or in a browser does not construct `CadreNode` itself. It call
 | `nodeClass` | `'device'` or `'server'`; see [Node class and roles](#node-class-and-roles). |
 | `roles` | Per-role overrides of what the class means; see [Node class and roles](#node-class-and-roles). |
 | `strandFilter` | Which of the party's strands this node runs; see [Strand filter](#strand-filter). |
-| `storage.provider` | Where blocks are kept; see [Storage provider](#storage-provider). |
+| `storage.open`, `storage.allotmentBytes` | Where this node's data is kept, and how much of the machine each network it serves was given; see [Storage](#storage). |
 | `keyStore` | Where the node's identity key and other secrets are kept. With neither this nor `privateKey`, the node gets a new peer id on every start. `InMemoryKeyStore` is for tests; `FileKeyStore` from `@serfab/cadre-core/key-store-file` is the Node.js backend. |
 | `network` | Listen addresses, transports and relays. On Node.js the default listens on TCP. A browser or phone passes WebSocket and circuit-relay transports with `listenAddrs: []`. |
 | `requireSignedSchemas` | Default `true`: an sApp config without a valid author signature is refused. Set `false` only for development. |
@@ -118,7 +118,7 @@ roles: {
 
 A role left out takes its preset's value (`device`: `false`, `'edge'`, `'forwarder'`, `true`; `server`: `true`, `'core'`, `'forwarder'`, `true`). A misspelled role name, or a value outside a role's own set, throws. `NODE_ROLE_PRESETS` and `resolveNodeRoles` are exported for a program that wants to show an operator what a config resolves to. See [Node classes](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#node-classes).
 
-`strandCohortMember: false` makes the node a **client** of every strand it runs: it reads and writes the strand through the machines that store it, asks `storage.provider` for no per-strand store, and is left out of every cluster, so it is never on the path of another machine's save. It cannot host storage replicas, so `hostUnclaimedStrands` defaults to `false` on it and an explicit `true` throws naming both settings. A client needs a serving machine reachable to open or found a strand. See [A node that holds no strand blocks](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#a-node-that-holds-no-strand-blocks).
+`strandCohortMember: false` makes the node a **client** of every strand it runs: it reads and writes the strand through the machines that store it, and is left out of every cluster, so it is never on the path of another machine's save. It still opens each strand scope's storage — a client keeps its own blob records, blob pieces and clock high-water mark — and never reads the block store beside them. It cannot host storage replicas, so `hostUnclaimedStrands` defaults to `false` on it and an explicit `true` throws naming both settings. A client needs a serving machine reachable to open or found a strand. See [A node that holds no strand blocks](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#a-node-that-holds-no-strand-blocks).
 
 ### Strand filter
 
@@ -133,42 +133,43 @@ strandFilter: { mode: 'none' }                       // the control network only
 
 `sAppId` is the sApp author's public key in base64url, the same value as `SAppConfig.id`. It is not a reverse-DNS application name. See [Strand filtering](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#strand-filtering).
 
-### Storage provider
+### Storage
 
-`storage.provider` is a function from a scope key to an `IRawStorage`. cadre-core calls it once for the control database and once for each strand the node starts.
+`storage.open` is an async function from a scope key to Optimystic's `NodeStorage` — the blocks, the node's own key-value records and its blob pieces, as one value. cadre-core calls it once for the control database and once for each strand the node starts.
 
 ```ts
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import { FileKeyStore } from '@serfab/cadre-core/key-store-file';
 
 const node = new CadreNode({
 	keyStore: new FileKeyStore('/var/lib/my-app/keys'),
 	controlNetwork: { partyId, bootstrapNodes: [] },
 	nodeClass: 'server',
-	storage: { provider: (scope) => new FileRawStorage(`/var/lib/my-app/data/${scope}`) },
+	storage: { open: async (scope) => fileNodeStorage(`/var/lib/my-app/data/${scope}`) },
 });
 ```
 
 - **The scope key is safe to use as a name.** It is a strand id, or `control-` followed by a hex encoding of the party id. Every key stays within `[a-z0-9._-]`, so it can go straight into a path or a database name. Do not parse it.
-- **Return the same data for the same key.** The provider is called again for a scope after its strand stops or the node restarts, and must return a store over the same durable data.
-- **Keep the control scope per party.** Two parties on one device must get two control stores, which the function form gives them. A single `IRawStorage` instance is also accepted, but it shares one store across every scope and can serve only one party.
-- **Close the stores yourself.** cadre-core never closes what the provider returned.
+- **Return the same location for the same key.** `open` is called again for a scope after its strand stops or the node restarts, and must return storage over the same durable data.
+- **Keep the control scope per party.** Two parties on one device must get two control stores. There is no form of this option that hands one value to every scope.
+- **Close the storage yourself.** cadre-core never closes what `open` returned; keep the `OpenNodeStorage` each factory gives back and close it after the node has stopped.
+- **`allotmentBytes` is per network, not per machine.** It reaches the control node and every strand node unchanged, so N strands plus the control network can hold up to (N+1) times that figure.
 
-| Package | Class | Platform |
+| Package | Opener | Platform |
 | --- | --- | --- |
-| `@optimystic/db-p2p` | `MemoryRawStorage` | Any; nothing persists |
-| `@optimystic/db-p2p-storage-fs` | `FileRawStorage` | Node.js |
-| `@optimystic/db-p2p-storage-rn` | `LevelDBRawStorage` | React Native |
-| `@optimystic/db-p2p-storage-ns` | `SqliteRawStorage` | NativeScript |
-| `@optimystic/db-p2p-storage-web` | `IndexedDBRawStorage` | Browsers |
+| `@optimystic/db-p2p` | `memoryNodeStorage()` | Any; nothing persists |
+| `@optimystic/db-p2p-storage-fs` | `fileNodeStorage(basePath)` | Node.js |
+| `@optimystic/db-p2p-storage-rn` | `levelDbNodeStorage(db)` | React Native |
+| `@optimystic/db-p2p-storage-ns` | `sqliteNodeStorage(db)` | NativeScript |
+| `@optimystic/db-p2p-storage-web` | `indexedDbNodeStorage(db)` | Browsers |
 
-See [Storage](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node.md#storage) for the cache cadre-core puts in front of a store and the rules that follow from it.
+See [A node's storage](https://github.com/gotchoices/sereus/blob/master/docs/cadre/node-storage.md) for the read cache cadre-core leases over a block store, the rules that follow from it, and what the allotment bounds.
 
 ## What the node keeps, and where
 
 cadre-core writes no files of its own. Everything durable goes through an object the embedder supplies:
 
-- **Blocks** of the control database and of each strand go to `storage.provider`.
+- **Blocks, blob records, blob pieces and the node's own ledgers** of the control database and of each strand go to the storage `storage.open` returns for that scope.
 - **Secrets** go to `keyStore`: the node's identity key, the owner key, and the record of strands joined from other parties.
 - **Node-local state** goes to the stores named in the config (`trustedOwners`, `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`). Each defaults to memory. The file-backed versions are Node.js subpath imports such as `@serfab/cadre-core/trusted-owner-store-file`.
 

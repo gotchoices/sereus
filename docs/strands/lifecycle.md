@@ -171,7 +171,7 @@ Each strand a node serves runs as its own libp2p network, separate from the part
 - **Network name.** A strand node is built with the network name `strand-<strand id>`, and `@optimystic/db-p2p` registers every protocol of that node under the prefix `/optimystic/strand-<strand id>`. A stream opened for one network's protocol is not handled by any other network's node.
 - **Separate libp2p node.** Each strand instance has its own libp2p node, with its own listening port, connections and FRET routing table. Stopping or hibernating one strand does not touch another.
 - **Separate transport identity.** A strand node's peer id is derived from the node's identity key and the strand id (`strand-transport-key.ts`), so the control node and each strand node have different peer ids.
-- **Separate storage.** The node calls its storage provider once per network, with the strand id as the key for a strand, so each strand's blocks are stored apart ([Storage](../cadre/node.md#storage)).
+- **Separate storage.** The node opens storage once per network, with the strand id as the key for a strand, so each strand's blocks are stored apart ([Storage](../cadre/node.md#storage)).
 
 | Network | Protocol prefix | Peers | Data |
 | --- | --- | --- | --- |

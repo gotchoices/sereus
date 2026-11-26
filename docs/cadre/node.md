@@ -33,7 +33,7 @@ The addresses an embedder supplies through `CadreNode.setInviteAddresses` or `ne
 
 A strand row that no app on this machine has claimed with `addStrand` is recorded in `CadreNode.getDiscoveredStrands()` and announced once per session as `strand:discovered`. Claims are held in memory only, so after a restart every stored strand is announced again. The [API guide](../api.md) says how an app subscribes without missing the first announcement and what `stopStrand` does to a claim.
 
-A failed launch leaves nothing tracked: `getStrand(id)` returns `undefined`, and the watcher retries with a doubling delay capped at five minutes. A launch that can never succeed is not retried: an id unusable as a [storage scope key](#storage-scope-keys), or [a schema the strand cannot take](../strands/app-schema.md#a-schema-that-can-never-apply-here-is-not-retried).
+A failed launch leaves nothing tracked: `getStrand(id)` returns `undefined`, and the watcher retries with a doubling delay capped at five minutes. A launch that can never succeed is not retried: an id unusable as a [storage scope key](node-storage.md#storage-scope-keys), or [a schema the strand cannot take](../strands/app-schema.md#a-schema-that-can-never-apply-here-is-not-retried).
 
 ### Strand instance state
 
@@ -68,11 +68,11 @@ Two of the four are the same under both presets, for different reasons. `reactiv
 
 The first three are local settings, and `network.enableRelay` and `hostUnclaimedStrands` each override one of them. The last two follow from what the node publishes in its [address record](#the-nodes-address-record): the party's other machines read that declaration and treat the machines that make it as the ones that stay reachable ([Cohort auto-connect](control-convergence.md#cohort-auto-connect)). That declaration is all they read — neither the class nor any other role is replicated — and [the control schema](control-schema.md#limits-and-accepted-tradeoffs) describes the column that stores it.
 
-Every node stores the control database: it keeps its blocks in whatever `storage.provider` returns ([Storage](#storage)). Whether it also stores the blocks of each strand it runs is `strandCohortMember`'s decision alone; nothing else, class included, decides it.
+Every node stores the control database: it keeps its blocks, its own key-value records and its blob pieces in whatever `storage.open` returns for the control scope ([Storage](#storage)). Whether it also stores the blocks of each strand it runs is `strandCohortMember`'s decision alone; nothing else, class included, decides it.
 
 ### A node that holds no strand blocks
 
-With `strandCohortMember: false`, every strand node the machine builds is an Optimystic **client** (`servesBlocks: false`). It runs the strand — reads, writes, membership, change notifications — and stores none of its blocks: it asks `storage.provider` for no per-strand store, and its reads and writes go to a coordinator among the strand's serving machines. The control network is unchanged and still replicates to every machine of the party.
+With `strandCohortMember: false`, every strand node the machine builds is an Optimystic **client** (`servesBlocks: false`). It runs the strand — reads, writes, membership, change notifications — and stores none of its blocks: its reads and writes go to a coordinator among the strand's serving machines. It still opens the strand scope's storage like any other role, because it keeps its own blob records, blob pieces, owed-blob ledger and clock high-water mark; the block store beside them is simply never read. The control network is unchanged and still replicates to every machine of the party.
 
 What keeps a client out of the strand's clusters is what it does not register. A client offers none of Optimystic's four storage protocols, so every other machine classifies it from its identify list as not serving and leaves it out of every cluster, and the client classifies itself the same way. A sleeping phone is therefore never on the path of another machine's save, which is what a strand with thousands of phones needs. Optimystic's `docs/internals.md` → "Client nodes" is the reference for what such a node builds, what it ignores and what a write costs.
 
@@ -127,7 +127,7 @@ With it off, the node announces the strand and launches nothing until an app cla
 | [Identity](#node-key-material-and-the-keystore) | `keyStore`, `identityKeyId`, `privateKey` | A new key each start |
 | [Trust before first sync](control-security.md) | `trustedOwners`, `seedTrustPolicy`, `claim` | Empty in-memory anchor; `anchoredTrustPolicy()`; not [claimable](membership.md#claiming-a-node) |
 | [Node-local stores](#node-local-state) | `bootstrapPeers`, `enrolledMachines`, `strandNetworkState`, `joinedStrands` | In memory, lost on exit |
-| [Block storage](#storage) | `storage.provider` | An in-memory store per network |
+| [Storage](#storage) | `storage.open`, `storage.allotmentBytes` | In-memory stores per network; no allotment |
 | [Which strands run](#strand-filtering) | `strandFilter`, `hostUnclaimedStrands`, `strandWatchInterval` | `all`; on when always on; 300 000 ms |
 | [Schema policy](../strands/lifecycle.md) | `requireSignedSchemas` | `true`: an unsigned sApp schema is refused |
 | [Replication](control-replication.md#replication-cluster-size) | `strandClusterSize`, `strandBackfill`, `controlBackfill` | 4; on; on ([Catching up a new machine](control-replication.md#catching-up-a-new-machine)) |
@@ -141,7 +141,7 @@ With it off, the node announces the strand and launches nothing until an app cla
 
 `strandWatchInterval` is not a polling period. The watcher runs when the tables change, and this value is the longest it goes without re-reading when it hears no change.
 
-A Node.js embedder that wants everything durable sets the identity, the node-local stores and a storage provider. This example is adapted from `packages/cadre-cli/src/commands/start-node.ts`:
+A Node.js embedder that wants everything durable sets the identity, the node-local stores and a storage opener. This example is adapted from `packages/cadre-cli/src/commands/start-node.ts`:
 
 ```typescript
 import { CadreNode } from '@serfab/cadre-core';
@@ -151,23 +151,23 @@ import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-
 import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { FileStrandNetworkStateStore } from '@serfab/cadre-core/strand-network-state-file';
 import { nodeDefaultTransports } from '@serfab/cadre-core/node-default-transports';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage, type OpenNodeStorage } from '@optimystic/db-p2p-storage-fs';
 
-const stores = new Map<string, FileRawStorage>();
-const provider = (scope: string): FileRawStorage => {
-	let store = stores.get(scope);
-	if (!store) {
-		store = new FileRawStorage(`${dataDir}/${scope}`);
-		stores.set(scope, store);
-	}
-	return store;
+// Keep each `OpenNodeStorage` and close it after the node has stopped: cadre-core
+// closes nothing it is handed. `fileNodeStorage` counts holders per directory, so a
+// re-entry for one scope is safe.
+const opened: OpenNodeStorage[] = [];
+const open = async (scope: string): Promise<OpenNodeStorage> => {
+	const storage = fileNodeStorage(`${dataDir}/${scope}`);
+	opened.push(storage);
+	return storage;
 };
 
 const node = new CadreNode({
 	keyStore: new FileKeyStore(stateDir),
 	controlNetwork: { partyId, bootstrapNodes: [] },
 	nodeClass: 'server',
-	storage: { provider },
+	storage: { open },
 	network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], defaultTransports: nodeDefaultTransports },
 	trustedOwners: { store: await FileTrustedOwnerStore.open(stateDir, partyId), pinnedKeys: [ownerKey] },
 	bootstrapPeers: { store: await FileBootstrapPeerStore.open(stateDir, partyId) },
@@ -313,46 +313,13 @@ The table lists every per-machine record, keys and block stores included, for `c
 
 ## Storage
 
-`storage.provider` supplies the raw block stores (`IRawStorage`) that the control database and each strand's database are kept in. It is either a function from a scope key to a store, or a single store. Use the function form: it gives each strand and each party its own store, so one strand's data can be removed, and it is the only form that can serve more than one party.
+`storage.open` is how a node opens one **scope's** storage — the control database, and each strand it runs. It is an asynchronous function from a scope key to Optimystic's `NodeStorage`, which holds all three stores a node persists to: `blocks` (block revisions and their commit proofs), `kv` (blob records, the owed-blob and under-replication ledgers, the clock's high-water mark, the node's transaction state) and `pieces` (the pieces of blobs this machine holds). Optimystic's `packages/db-p2p/docs/storage.md` §8 says what each part promises and which role reads it.
 
-### Storage scope keys
+`blocks` is required whatever the node's role, so one value serves either and changing the role changes one flag; the unused block store on a [client](#a-node-that-holds-no-strand-blocks) costs nothing, because every backend's constructor is lazy. `storage.allotmentBytes` is how much of this machine the operator gave each network the node serves.
 
-cadre-core calls the provider once per **scope** and passes a **scope key**:
+A node with no `storage` block at all keeps all three stores in memory and says in one start-up warning what a restart then loses. cadre-core passes Optimystic no storage option at all in that case rather than an explicit in-memory value, so that warning is not suppressed.
 
-| Scope | Key | Minted by |
-|---|---|---|
-| A strand | The strand id | The node that founded the strand, which may be another machine |
-| The control database | `control-` followed by the lowercase hex of the party id's UTF-8 bytes | `controlStorageScope(partyId)` in `storage-scope.ts` |
-
-**A scope key is opaque and already safe as a name.** Every key stays within `[a-z0-9._-]`, so it can be placed directly in a file path or a database name. The set has no uppercase letters because Windows and macOS file names ignore case. Do not parse a key; `controlStorageScope` and `isControlStorageScope` mint and recognise the control key.
-
-**The control scope is per party.** Two parties on one device ask for two keys and must get two stores. A node started for one party over the other's store would read that party's owners and machines as its own.
-
-A party id is arbitrary text, so the control key encodes it. A strand id arrives by replication from whichever node founded the strand, so it is checked instead: `assertStrandScopeKey` runs at every strand launch and refuses an id that is not a safe name of at most 128 characters or that starts with `control-`. The refusal is `InvalidStrandIdError`, and the watcher does not retry that strand.
-
-### When the provider is called
-
-The provider is called once per scope per runtime: for the control scope once per `CadreNode.start()`, and for a strand once per launch. cadre-core keeps the returned store while that runtime lives, so a wake from hibernation reuses it and its warm cache.
-
-After `stopStrand`, or a `stop()` followed by `start()`, the provider is called again for the scope and must return a store over the same durable data, as the same object or a new one. cadre-core never closes what the provider returned; closing the handle is the embedder's job once the node has stopped.
-
-### The storage cache
-
-A cold start of a control database or a strand reads the same few blocks many times over, so cadre-core wraps every provided store in Optimystic's write-through cache through one helper, `wrapStorageWithCache` in `packages/quereus-plugin-sereus/src/cached-storage.ts`. `MemoryRawStorage`, and a store with its own read cache such as React Native's `LevelDBRawStorage`, pass through unwrapped.
-
-The cache is correct only if every write to a backend goes through it. An embedder therefore provides one store per path and runs one process per store: two store objects over one directory or database would each have a cache that misses the other's writes. Call sites in this repository wrap every store with `wrapStorageWithCache` and release it with `disposeStorageCache`; the module comment gives the rules.
-
-### Available storage implementations
-
-| Package | Class | Environment |
-|---|---|---|
-| `@optimystic/db-p2p` | `MemoryRawStorage` | Any. Nothing persists; for tests. |
-| `@optimystic/db-p2p-storage-fs` | `FileRawStorage` | Node.js |
-| `@optimystic/db-p2p-storage-rn` | `LevelDBRawStorage` | React Native, over `rn-leveldb` |
-| `@optimystic/db-p2p-storage-ns` | `SqliteRawStorage` | NativeScript |
-| `@optimystic/db-p2p-storage-web` | `IndexedDBRawStorage` | Browser |
-
-A backend whose open call is asynchronous (IndexedDB, SQLite) cannot be returned directly, because the provider is synchronous. `lazyRawStorage` from `@serfab/cadre-core/edge-node` wraps an asynchronous opener in a store that opens on first use.
+[A node's storage](node-storage.md) is the rest of it: the scope keys, when `open` is called, who closes the handles, the read cache cadre-core leases over `blocks`, each platform's one-call opener, and what the allotment does and does not bound.
 
 ## The edge node
 
@@ -385,9 +352,13 @@ const node = await edge.start({ partyId, bootstrapAddrs: [], relayAddrs });
 `EdgeNodePlatform` (`edge-node/platform.ts`) has two required members:
 
 - **`keyStore`**, a cadre-core `KeyStore` for everything secret: the identity, the owner key, the joined-strand records and the strand-move records.
-- **`storage`**, an `EdgeNodeStorage`: an `id` that names the storage, a raw block store per scope (`rawStorage`), a node-local key-value store for the saved start and per-party records (`nodeLocal`), `destroyScope` for deleting a scope's data, and `close`, which the edge node calls on every stop.
+- **`storage`**, an `EdgeNodeStorage`: an `id` that names the storage, all of one scope's storage per scope (`nodeStorage`), a node-local key-value store for the saved start and per-party records (`nodeLocal`), `destroyScope` for deleting a scope's data, and `close`, which the edge node calls on every stop and which closes every `OpenNodeStorage` the platform opened.
 
-`storage` has two optional members. `offlineJournal` enables [offline mode](../strands/writes.md#offline-mode); without it `EdgeNode.setStrandOfflineMode` throws an `Error`. `trustedOwnerSlot` puts the trusted-owner anchor in a more tamper-resistant store than the node-local one.
+`storage` has three optional members:
+
+- **`offlineJournal`** enables [offline mode](../strands/writes.md#offline-mode); without it `EdgeNode.setStrandOfflineMode` throws an `Error`, so its presence is how a platform declares it supports offline mode at all. It returns that scope's own `nodeStorage` `kv`, never a second key-value store over the same handle, which would not see the first one's unflushed writes.
+- **`allotmentBytes`** is what the platform declares as [the allotment](node-storage.md#the-storage-allotment) for every node over this storage. A platform whose backend reports no free space (React Native's LevelDB, NativeScript's SQLite) must declare one, and `DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES` (2 GiB) is the figure the kits use; a browser leaves it out, because IndexedDB reports the origin's own estimate.
+- **`trustedOwnerSlot`** puts the trusted-owner anchor in a more tamper-resistant store than the node-local one.
 
 The other members are optional: `transports` (default WebSocket and circuit relay), `listenAddrs`, `noiseCrypto`, `allowPrivateDial` (default `true`: the node may dial loopback, private and plain `ws://` addresses, which libp2p's browser and React Native builds otherwise refuse), and `configure`, which may change anything in the finished `CadreNodeConfig`.
 
@@ -397,7 +368,7 @@ The React Native kit's `createPhoneNode` (`@serfab/cadre-rn/phone-node`) is the 
 
 ## Limits and accepted tradeoffs
 
-- **Storage quotas are not enforced.** `storage.quotaBytes` is accepted and nothing reads it, so a `server`-class node stores every strand its filter admits. This is acceptable while a party has a handful of strands; if always-on nodes come to host hundreds, the options are per-strand quotas or a narrower default filter (ticket `5-quota-enforcement`).
+- **What the storage allotment does and does not bound**, the pressure thresholds Sereus leaves unexposed, and why how full a machine is cannot be read as one figure: [A node's storage](node-storage.md#limits-and-accepted-tradeoffs).
 - **cadre-core configures no storage rings.** The `server` class switches Optimystic's Arachnode subsystem on with its defaults and passes it no ring or capacity settings. Where cadre-core's own join catch-up runs, it turns Optimystic's rebalance reaction off, so a node stays in the ring it started in (ticket `5-ring-zulu-storage-rings`).
 - **A machine's published always-on declaration is unverified.** Other nodes use it only to choose whom to dial first, so a false declaration costs only wasted dials.
 - **The single-store provider form has not been run end to end.** Every provider in this repository returns a store per scope. One `IRawStorage` shared by all scopes is exercised only with in-memory stores, which are never cached (ticket `debt-shared-store-provider-never-exercised-end-to-end`).

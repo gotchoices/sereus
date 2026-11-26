@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
+import type { NodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { controlNodeConfig, freshPartyId, scopedWithin } from './control-db-node-helpers.js';
@@ -26,11 +26,12 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * `tickets/complete/control-start-storage-op-budget.md`, where `MemoryRawStorage`
  * and `FileRawStorage` agreed on the same figure. So no file-backed arm here.
  *
- * ONLY THE STRAND'S STORAGE IS COUNTED. The `CadreNodeConfig.storage.provider`
+ * ONLY THE STRAND'S BLOCKS ARE COUNTED. `CadreNodeConfig.storage.open`
  * is called with the party's control scope key for the control node and with the
  * strandId for the strand, and the counting wrapper goes on the strandId branch
  * alone — the control database's ~1500-operation start would otherwise swamp the
- * measurement. The zero-ops assertion before `addStrand` makes a wrong wrap
+ * measurement. The wrapper fronts that scope's `blocks`; its key-value store and piece
+ * store are not counted, which is right for budgets about the block store and its cache. The zero-ops assertion before `addStrand` makes a wrong wrap
  * fail loudly rather than inflate a budget.
  *
  * Wall clock is printed per phase (grep `[strand-write-budget]`) and bounded
@@ -61,7 +62,7 @@ const within = scopedWithin('strand-write-budget');
  * a budget with no provenance cannot tell the next reader whether the count
  * grew or the budget was always wrong.
  */
-const MEASURED_ON = '2026-11-20';
+const MEASURED_ON = '2026-11-25';
 /**
  * The `../optimystic` commit these figures were measured against. At `03ffadc4` (2026-09-17)
  * the SELECT phase fell to zero backend operations, when that repo made a refresh of an
@@ -93,8 +94,14 @@ const MEASURED_ON = '2026-11-20';
  * `saveCommitProof` per commit message (15 in launch, 5 in insert), and each block's
  * `saveBlockProof` became a `saveProofEntry` referencing it, one for one. Without the 30 and 10
  * new operations every method's count equals the `087bfc11` figures.
+ *
+ * Re-measured whole at `a7b1595e` (Optimystic 1.30.0) on 2026-11-25, where a node takes all three
+ * of its stores as one value and measures itself against an allotment: launch 424, insert 88,
+ * select 0. The one new operation is the storage account's single `getApproximateBytesUsed` scan
+ * at start-up. The counter fronts the strand's BLOCKS only, so the node's key-value records and
+ * blob pieces are outside every figure here.
  */
-const BASELINE_UPSTREAM = 'optimystic e81f33e3';
+const BASELINE_UPSTREAM = 'optimystic a7b1595e';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
  * schema (9 tables + 1 index) applied, the App schema version recorded (its row creates
@@ -120,15 +127,17 @@ const BASELINE_UPSTREAM = 'optimystic e81f33e3';
  * empty tree. History: 1613 uncached (2026-08-13, when the retired
  * local-transactor baseline measured 1592 over the same blocks), 1979 after the
  * upstream catalog re-read (2026-08-14), 168 with cadre-core's write-through
- * cache wired (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`, 2026-08-17),
+ * cache wired (cadre-core's leased `withReadCache`, 2026-08-17),
  * 78 with schema batching (2026-09-14), 88 at optimystic `2a1bfedb` (the no-op deletes), 80 at
  * `fbf165ee` — the 2 pends that did not create their block now write metadata too — 380
  * over 39 once the founder committed every declared table's collection (2026-10-17), and 366
  * over 39 once the founding transaction's own tables were left out of them (2026-10-20). The
  * same batched launch measured 322 uncached on 2026-09-14 (155 of them `getMetadata`), before
- * the empty collections.
+ * the empty collections. One more at {@link BASELINE_UPSTREAM} (2026-11-25): the strand node's
+ * storage account makes one `getApproximateBytesUsed` scan at start-up, now that a node measures
+ * itself against an allotment. INSERT and SELECT did not move.
  */
-const LAUNCH: Budget = { ops: 423, blocks: 42, opBudget: 437, blockBudget: 45 };
+const LAUNCH: Budget = { ops: 424, blocks: 42, opBudget: 437, blockBudget: 45 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
  * 88 over 2 blocks — nearly all writes, 10 of them the commit-proofs store (see
@@ -215,21 +224,26 @@ async function measureSoloStrand(): Promise<RunCost> {
 	const keyStore = new InMemoryKeyStore();
 	const counter = new StorageOpCounter();
 	const strandId = `budget-${Math.random().toString(36).slice(2)}`;
-	// Count ONLY the strand's storage: the provider is called with the party's
+	// Count ONLY the strand's blocks: the opener is called with the party's
 	// control scope key for the control node and with the strandId for the strand —
 	// the counting wrapper goes on the strand branch alone. Keyed on the strand id
 	// rather than on "not the control key", so nothing here depends on how the
-	// control scope is spelled.
+	// control scope is spelled. The strand's key-value and piece stores are not counted:
+	// the budgets below are block-store budgets, and the cache this guards is leased over
+	// `blocks` alone.
 	//
 	// Memoised per scope for the same reason `fileStorageProvider` is: `CadreNode`
 	// asks once per scope today, but a second call handing back a fresh (empty)
 	// store would split the strand's blocks across two views rather than
 	// measuring one.
-	const byScope = new Map<string, IRawStorage>();
-	const provider = (scope: string): IRawStorage => {
+	const byScope = new Map<string, NodeStorage>();
+	const provider = async (scope: string): Promise<NodeStorage> => {
 		let storage = byScope.get(scope);
 		if (!storage) {
-			storage = scope === strandId ? new CountingRawStorage(new MemoryRawStorage(), counter) : new MemoryRawStorage();
+			const opened = memoryNodeStorage();
+			storage = scope === strandId
+				? { ...opened, blocks: new CountingRawStorage(opened.blocks, counter) }
+				: opened;
 			byScope.set(scope, storage);
 		}
 		return storage;
@@ -238,10 +252,10 @@ async function measureSoloStrand(): Promise<RunCost> {
 	const node = new CadreNode(controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage: provider }));
 	try {
 		await within('start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
-		// The control start must not have touched the counted storage — a provider
+		// The control start must not have touched the counted storage — an opener
 		// that wrapped the control scope too would inflate every budget below by ~1500 ops.
 		expect(counter.snapshot().total,
-			'strand storage counter saw operations BEFORE addStrand — the provider is wrapping the control storage too'
+			'strand storage counter saw operations BEFORE addStrand — the opener is wrapping the control storage too'
 		).toBe(0);
 
 		// --- Launch -------------------------------------------------------------

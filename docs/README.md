@@ -36,6 +36,7 @@ An index of the documentation by task and by folder. Every reader starts with [C
 - [Removing a machine](cadre/removing-machines.md): the removal transaction, what the removed machine keeps, key replacement in closed strands.
 - [Several apps in one cadre](cadre/apps.md): an app joining an existing cadre and moving its strands.
 - [The cadre node](cadre/node.md): node classes, strand filter, configuration, keys, storage, the edge node.
+- [A node's storage](cadre/node-storage.md): scope keys, when storage is opened, who closes it, the read cache, each platform's opener, the allotment.
 
 ### strands/
 

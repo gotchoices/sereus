@@ -21,16 +21,16 @@ import { webSockets } from '@libp2p/websockets';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
-import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
-import type { IRawStorage, OptimysticNode } from '@optimystic/db-p2p';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { createLibp2pNode, memoryNodeStorage } from '@optimystic/db-p2p';
+import type { NodeStorage, OptimysticNode } from '@optimystic/db-p2p';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import type { CadreNode } from '../src/cadre-node.js';
 import { withTimeout } from '../src/control-stream.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type { InMemoryKeyStore } from '../src/key-store.js';
 import { signPeerRecord } from '../src/peer-record.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '../src/types.js';
-import type { CadreNodeConfig, NetworkConfig, RawStorageProvider } from '../src/types.js';
+import type { CadreNodeConfig, NetworkConfig, StorageConfig } from '../src/types.js';
 import type { NodeClass } from '../src/node-class.js';
 
 /**
@@ -98,7 +98,7 @@ export function freshPartyId(tag: string): string {
  * step with `CadreNode.buildControlNodeOptions`; what such a spec tests is the schema apply over
  * optimystic storage, not how a node is configured.
  */
-export function createControlNode(partyId: string, storage: IRawStorage, privateKey?: PrivateKey): Promise<OptimysticNode> {
+export function createControlNode(partyId: string, storage: NodeStorage, privateKey?: PrivateKey): Promise<OptimysticNode> {
 	return createLibp2pNode({
 		...(privateKey && { privateKey }),
 		port: 0,
@@ -119,12 +119,11 @@ export interface ControlNodeConfigOpts {
 	nodeClass: NodeClass;
 	keyStore: InMemoryKeyStore;
 	/**
-	 * A single `IRawStorage` instance (control node and any strand node then
-	 * share it) or a `(id) => IRawStorage` factory. Pass
-	 * {@link fileStorageProvider} for a restart that survives on DISK rather
-	 * than in the parent process's heap.
+	 * How each scope's storage is opened — {@link memoryStorageProvider} for a restart that
+	 * survives in the parent process's heap, {@link fileStorageProvider} for one that survives
+	 * on DISK and nowhere else.
 	 */
-	storage: RawStorageProvider;
+	storage: StorageConfig['open'];
 	/** Defaults to `[webSockets()]` — the mobile/browser posture. */
 	transports?: NetworkConfig['transports'];
 	/** Defaults to `[]` — no inbound connections, as RN/browser cannot accept them. */
@@ -152,7 +151,7 @@ export function controlNodeConfig(opts: ControlNodeConfigOpts): CadreNodeConfig 
 			bootstrapNodes: []
 		},
 		nodeClass: opts.nodeClass,
-		storage: { provider: opts.storage },
+		storage: { open: opts.storage },
 		network: {
 			transports: opts.transports ?? [webSockets()],
 			// The RN/browser default (see types.ts NetworkConfig.listenAddrs): these
@@ -169,27 +168,35 @@ export function tempStorageDir(tag: string): string {
 }
 
 /**
- * A `(scope) => IRawStorage` factory backed by real files under `baseDir`, one
- * subdirectory per scope — `controlStorageScope(partyId)` for the control network
- * (see `CadreNode.startControlNetwork`), the strand id for each strand.
+ * A `StorageConfig.open` backed by real files under `baseDir`, one subdirectory per scope —
+ * `controlStorageScope(partyId)` for the control network (see `CadreNode.startControlNetwork`),
+ * the strand id for each strand.
  *
- * The instance per scope is MEMOISED, so two calls for the same scope hand back the
- * same handle rather than two views of one directory. `CadreNode` asks once per
- * node instance, so a restart against the same `baseDir` gets a *new*
- * `FileRawStorage` reading the rows the previous run left on disk — which is the
- * point: unlike a shared `MemoryRawStorage`, nothing survives in the heap, so a
- * warm start that only appears to work because the old object was still around
- * cannot pass.
+ * What this gives a restart is the same DIRECTORY, not a fresh handle over it. Memoised per
+ * scope, so two opens for the same scope hand back the same value; and `fileNodeStorage` keeps
+ * one set of stores per directory in the process anyway, counted by holder, so even a caller that
+ * builds a second `fileStorageProvider` over one `baseDir` is handed the stores the first opened.
+ * A genuinely cold handle over warm bytes is therefore not obtainable through this helper — a spec
+ * that needs one constructs `FileRawStorage`, `FileKVStore` and `FilePieceStore` itself, which is
+ * what upstream's own factory comment points callers that are not ordinary hosts at.
+ *
+ * What it still buys over {@link memoryStorageProvider} is that the bytes are REAL: the rows a
+ * restart reads were written through a filesystem backend and its write-ahead log, not kept as
+ * heap objects, so a hydrate path that only works against an in-memory store fails here.
+ *
+ * The returned `OpenNodeStorage`s are deliberately not closed: the caller removes `baseDir`. The
+ * directory's log is therefore never checkpointed and its lock never released inside the process,
+ * which is what it was before this took one set of stores per scope instead of one block store.
  */
-export function fileStorageProvider(baseDir: string): (scope: string) => IRawStorage {
-	const byScope = new Map<string, IRawStorage>();
-	return (scope: string) => {
+export function fileStorageProvider(baseDir: string): StorageConfig['open'] {
+	const byScope = new Map<string, NodeStorage>();
+	return async (scope: string) => {
 		let storage = byScope.get(scope);
 		if (!storage) {
 			// encodeURIComponent: cadre-core's own scope keys are already path-safe, but
 			// a test may pass a hand-written strand id, and `FileStoreDriver` does no
 			// escaping of its own.
-			storage = new FileRawStorage(join(baseDir, encodeURIComponent(scope)));
+			storage = fileNodeStorage(join(baseDir, encodeURIComponent(scope)));
 			byScope.set(scope, storage);
 		}
 		return storage;
@@ -197,23 +204,23 @@ export function fileStorageProvider(baseDir: string): (scope: string) => IRawSto
 }
 
 /**
- * A `(scope) => IRawStorage` factory backed by one `MemoryRawStorage` per scope —
- * the heap-resident counterpart of {@link fileStorageProvider}, memoised for the same
- * reason: `CadreNode` asks once per scope, and handing back a fresh (empty) store on a
- * second call for the same scope would split that scope's blocks across two views.
+ * A `StorageConfig.open` backed by one `memoryNodeStorage()` per scope — the heap-resident
+ * counterpart of {@link fileStorageProvider}, memoised for the same reason: `CadreNode` asks once
+ * per scope, and handing back a fresh (empty) set on a second open of the same scope would split
+ * that scope's blocks across two views.
  *
- * Because the instances live in the parent process's heap, a node rebuilt over the same
- * provider is a restart that keeps its blocks — which is what the restart specs want and
- * exactly what {@link fileStorageProvider} deliberately does NOT give them. Use this one
- * when the point is "same stored rows, new node"; use the file-backed one when the point
- * is "nothing but the bytes on disk crossed the boundary".
+ * Because the stores live in the parent process's heap, a node rebuilt over the same opener is a
+ * restart that keeps its blocks — which is what the restart specs want and exactly what
+ * {@link fileStorageProvider} deliberately does NOT give them. Use this one when the point is
+ * "same stored rows, new node"; use the file-backed one when the point is "nothing but the bytes
+ * on disk crossed the boundary".
  */
-export function memoryStorageProvider(): (scope: string) => IRawStorage {
-	const byScope = new Map<string, IRawStorage>();
-	return (scope: string) => {
+export function memoryStorageProvider(): StorageConfig['open'] {
+	const byScope = new Map<string, NodeStorage>();
+	return async (scope: string) => {
 		let storage = byScope.get(scope);
 		if (!storage) {
-			storage = new MemoryRawStorage();
+			storage = memoryNodeStorage();
 			byScope.set(scope, storage);
 		}
 		return storage;

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
-import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { signSchema } from '../src/schema-verification.js';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import { CachedRawStorage, memoryNodeStorage } from '@optimystic/db-p2p';
+import type { IRawStorage, NodeStorage } from '@optimystic/db-p2p';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
@@ -44,8 +44,8 @@ const mocks = vi.hoisted(() => {
 });
 
 // Partial mock: only `createLibp2pNode` is stubbed. The real module stays for the
-// storage classes (`MemoryRawStorage`, `CachedRawStorage`) that cadre-core's cache
-// wrap (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`) instanceof-checks on every strand launch,
+// storage pieces cadre-core's read-cache lease (`withReadCache`, at `node-storage-cache.ts`)
+// reads and class-checks on every strand launch,
 // for `resolveLinkDeadlines`, from which cadre-core derives the dial limits it states on every node
 // it builds (`optimysticDialLimits`), and for `FindCoordinatorError`, which `control-read-retry.ts`
 // matches a launch that reached no machine by. A narrowed mock fails on the missing export instead,
@@ -71,8 +71,9 @@ beforeEach(() => {
 });
 
 /** A stand-in raw store — the gate only tests its presence, never calls it. */
-function fakeStorage(): IRawStorage {
-  return {} as IRawStorage;
+/** Storage whose `blocks` is not in-memory, so `withReadCache` really wraps it. */
+function fakeStorage(): NodeStorage {
+  return { ...memoryNodeStorage(), blocks: {} as IRawStorage };
 }
 
 function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
@@ -89,7 +90,7 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
     sAppConfig,
     roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
-    storage: { provider: fakeStorage() },
+    storage: { open: async () => fakeStorage() },
     ...overrides
   };
 }
@@ -111,24 +112,21 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     expect(mocks.backfillStart).toHaveBeenCalledTimes(1);
   });
 
-  it('hands the catch-up the strand\'s own store and the node\'s own protocol prefix', async () => {
+  it('hands the catch-up the strand\'s own blocks and the node\'s own protocol prefix', async () => {
     // A prefix that disagrees with the receiver's registered handler is a silent
     // no-op at run time, so it is pinned here rather than left to inspection.
     const storage = fakeStorage();
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('bf-wiring', { storage: { provider: storage } }));
+    await manager.startStrand(createStartConfig('bf-wiring', { storage: { open: async () => storage } }));
 
     const deps = lastBackfillDeps();
     expect(deps.label).toBe('bf-wiring');
-    // The catch-up gets the same CACHED view the strand node writes through — the
-    // memoized wrap of the provided store, not a second cache over the same backend.
-    // Asserting THROUGH the helper takes a holder claim, so release it again: the pair
-    // must balance, and an unreleased claim would keep this strand's cache registered
-    // in the process-wide pool past a `stopStrand`.
-    const cached = wrapStorageWithCache(storage, 'bf-wiring');
-    expect(deps.storage).toBe(cached);
-    await disposeStorageCache(cached);
+    // The catch-up reads the strand's blocks through the SAME leased cache the strand node
+    // writes through, not a second cache over the same location — so its whole-store scan is
+    // not an extra uncached pass.
+    expect(deps.storage).toBeInstanceOf(CachedRawStorage);
     expect(deps.protocolPrefix).toBe('/optimystic/strand-bf-wiring');
+    await manager.stopStrand('bf-wiring');
   });
 
   it('does NOT arm without per-strand storage — there would be nothing to copy', async () => {

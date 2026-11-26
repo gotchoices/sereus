@@ -21,7 +21,6 @@ export {
 	controlClusterPolicy,
 	strandClusterPolicy
 } from './cluster-size.js';
-export { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 export type {
 	StrandConnectionOptions, StrandAppSchemaOptions, SereusPluginResult, StrandTransactor, StrandOfflineOptions, StrandOfflineController, AppSchemaOutcome, AppSchemaWait,
 } from './types.js';

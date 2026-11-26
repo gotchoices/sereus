@@ -6,7 +6,7 @@ import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { PeerUnreachableError } from '../src/peer-dial.js';
@@ -98,7 +98,7 @@ describe('CadreNode — claiming a node whose first addresses never answer', () 
 		const claimable = new CadreNode({
 			controlNetwork: { partyId: 'unclaimed', bootstrapNodes: [] },
 			nodeClass: 'device',
-			storage: { provider: new MemoryRawStorage() },
+			storage: { open: async () => memoryNodeStorage() },
 			network: { transports: [webSockets()], listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'] },
 			claim: { secret, record: async () => {} },
 		});
@@ -169,7 +169,7 @@ async function buildPhoneOwner(): Promise<PhoneOwner> {
 		controlNetwork: { partyId: `dial-past-dead-${Math.random().toString(36).slice(2)}`, bootstrapNodes: [] },
 		privateKey: key,
 		nodeClass: 'device',
-		storage: { provider: new MemoryRawStorage() },
+		storage: { open: async () => memoryNodeStorage() },
 		network: {
 			// The phone's posture: WebSockets only, nothing to listen on.
 			transports: [webSockets()],

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Libp2p } from '@libp2p/interface';
-import { MemoryRawStorage, type IRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage, type IRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
@@ -45,9 +45,9 @@ function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
   return {
     controlNetwork: { partyId: PARTY_ID, bootstrapNodes: [] },
     nodeClass: 'device',
-    // A MemoryRawStorage passes through `wrapStorageWithCache` unwrapped, so these
-    // tests leave nothing registered in the process-wide cache pool.
-    storage: { provider: () => new MemoryRawStorage() },
+    // In-memory blocks pass through `withReadCache` unwrapped, so these tests leave
+    // nothing registered in the process-wide cache pool.
+    storage: { open: async () => memoryNodeStorage() },
     ...overrides
   };
 }
@@ -69,9 +69,9 @@ function fakeControlNode(opts: { keyNetwork?: boolean } = {}): Libp2p {
  * only `this.config` and the attached control node, so calling it directly keeps this a
  * pure unit test.
  */
-function armControlBackfill(node: CadreNode, controlNode: Libp2p | null = fakeControlNode()): void {
+async function armControlBackfill(node: CadreNode, controlNode: Libp2p | null = fakeControlNode()): Promise<void> {
   (node as unknown as { controlNode: Libp2p | null }).controlNode = controlNode;
-  (node as unknown as { startControlBackfill(): void }).startControlBackfill();
+  await (node as unknown as { startControlBackfill(): Promise<void> }).startControlBackfill();
 }
 
 interface CapturedDeps {
@@ -97,11 +97,11 @@ beforeEach(() => {
 });
 
 describe('CadreNode control-network peer-join catch-up arming', () => {
-  it('arms with the control network name, its protocol prefix, and the control store', () => {
-    const store = new MemoryRawStorage();
-    const node = new CadreNode(createConfig({ storage: { provider: () => store } }));
+  it('arms with the control network name, its protocol prefix, and the control store', async () => {
+    const storage = memoryNodeStorage();
+    const node = new CadreNode(createConfig({ storage: { open: async () => storage } }));
 
-    armControlBackfill(node);
+    await armControlBackfill(node);
 
     expect(mocks.PeerJoinBackfill).toHaveBeenCalledTimes(1);
     expect(mocks.start).toHaveBeenCalledTimes(1);
@@ -110,19 +110,20 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     // Must equal the prefix the receiver registered its block-transfer handler under —
     // `/optimystic/<networkName>` — or every push silently fails to dial.
     expect(deps.protocolPrefix).toBe(`/optimystic/control-${PARTY_ID}`);
-    // The catch-up reads the SAME resolved control store the control node writes through,
-    // not a second wrap over the same backend.
-    expect(deps.storage).toBe(store);
+    // The catch-up reads the SAME blocks the control node writes through, not a second
+    // cache over the same location. In-memory blocks pass through `withReadCache`
+    // unwrapped, so here that is the opened store itself.
+    expect(deps.storage).toBe(storage.blocks);
   });
 
-  it('resolves the control store even when nothing resolved it first', () => {
+  it('resolves the control store even when nothing resolved it first', async () => {
     // `start()` happens to build the node options (which resolve the store) before arming
     // the catch-up. Arming must not DEPEND on that ordering: reading a not-yet-populated
     // memo field would disarm the catch-up silently, and the only symptom would be members
     // reading control tables as empty after an offline restart.
     const node = new CadreNode(createConfig());
 
-    armControlBackfill(node);
+    await armControlBackfill(node);
 
     expect(mocks.PeerJoinBackfill).toHaveBeenCalledTimes(1);
     expect(lastConstruction().deps.storage).toBeDefined();
@@ -132,7 +133,7 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     const node = new CadreNode(createConfig());
     const priv = node as unknown as { authorizedControlPeers: Set<string> };
 
-    armControlBackfill(node);
+    await armControlBackfill(node);
 
     const gate = lastConstruction().deps.authorizePeer;
     expect(gate).toBeTypeOf('function');
@@ -144,44 +145,44 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     expect(await gate!('stranger')).toBe(false);
   });
 
-  it('defaults to a shorter settle window than the strand catch-up, and the embedder can override it', () => {
+  it('defaults to a shorter settle window than the strand catch-up, and the embedder can override it', async () => {
     const node = new CadreNode(createConfig());
-    armControlBackfill(node);
+    await armControlBackfill(node);
     expect(lastConstruction().config?.debounceMs).toBe(250);
 
     const tuned = new CadreNode(createConfig({ controlBackfill: { debounceMs: 5_000 } }));
-    armControlBackfill(tuned);
+    await armControlBackfill(tuned);
     expect(lastConstruction().config?.debounceMs).toBe(5_000);
   });
 
-  it('does NOT arm when the embedder disabled it', () => {
+  it('does NOT arm when the embedder disabled it', async () => {
     const node = new CadreNode(createConfig({ controlBackfill: { enabled: false } }));
-    armControlBackfill(node);
+    await armControlBackfill(node);
     expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
   });
 
-  it('does NOT arm without a control node, without control storage, or without a keyNetwork', () => {
+  it('does NOT arm without a control node, without control storage, or without a keyNetwork', async () => {
     const noNode = new CadreNode(createConfig());
-    armControlBackfill(noNode, null);
+    await armControlBackfill(noNode, null);
     expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
 
     const noStorage = new CadreNode(createConfig({ storage: undefined }));
-    armControlBackfill(noStorage);
+    await armControlBackfill(noStorage);
     expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
 
     const noKeyNetwork = new CadreNode(createConfig());
-    armControlBackfill(noKeyNetwork, fakeControlNode({ keyNetwork: false }));
+    await armControlBackfill(noKeyNetwork, fakeControlNode({ keyNetwork: false }));
     expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
   });
 
   it('stops and drops the catch-up on cleanup, so a restart rebuilds it', async () => {
     const node = new CadreNode(createConfig());
-    armControlBackfill(node);
+    await armControlBackfill(node);
 
     await nodeCleanup(node);
     expect(mocks.stop).toHaveBeenCalledTimes(1);
 
-    armControlBackfill(node);
+    await armControlBackfill(node);
     expect(mocks.PeerJoinBackfill).toHaveBeenCalledTimes(2);
     expect(mocks.start).toHaveBeenCalledTimes(2);
     await nodeCleanup(node);
@@ -192,7 +193,7 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     // denied while its connection stays up. Without this hook it would wait for a
     // reconnect to be caught up at all.
     const node = new CadreNode(createConfig());
-    armControlBackfill(node);
+    await armControlBackfill(node);
     const priv = node as unknown as {
       _running: boolean;
       controlDatabase: unknown;
@@ -215,7 +216,7 @@ describe('CadreNode control-network peer-join catch-up arming', () => {
     // A failed read leaves the gate's snapshot stale; re-arming off it would spend a
     // whole-store pass per connected peer on nothing new.
     const node = new CadreNode(createConfig());
-    armControlBackfill(node);
+    await armControlBackfill(node);
     const priv = node as unknown as {
       _running: boolean;
       controlDatabase: unknown;

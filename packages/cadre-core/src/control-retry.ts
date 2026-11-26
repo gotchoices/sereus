@@ -1,5 +1,5 @@
 import debug from 'debug';
-import { isCohortUnreachableRead, PromiseShortfallError } from '@optimystic/db-core';
+import { CohortOutOfSpaceError, isCohortUnreachableRead, PromiseShortfallError } from '@optimystic/db-core';
 import { unwrapError } from '@quereus/quereus';
 
 const log = debug('sereus:cadre:control-db');
@@ -348,6 +348,32 @@ export function reportsUnreachableCohort(links: readonly Error[]): boolean {
  */
 export function reportsUnansweredShortfall(links: readonly Error[]): boolean {
 	return links.some(link => link instanceof PromiseShortfallError && link.rejections === 0);
+}
+
+/**
+ * Does any link of the `cause` chain report that the cohort had no room for this write — a
+ * `CohortOutOfSpaceError`? Then the write is over: nothing about its revision is the problem, so
+ * a re-read and rebase sends the same bytes to the same full machines, and every attempt after
+ * the first spends budget on a write that cannot succeed.
+ *
+ * A VETO, not a matcher. The control-write funnel is where it matters, and there it must run
+ * before any claim, because `isUncommittedTransactorAggregate` claims a failure on the PHASE
+ * alone, whatever the cause inside says — deliberately, see its own comment. An out-of-space
+ * refusal arriving inside the transactor's promise-phase aggregate would otherwise be
+ * re-presented up to `CONTROL_WRITE_ATTEMPTS` times. It applies to all three shipped write
+ * policies, since none of the bodies they opt in can make room on another machine.
+ *
+ * Here beside {@link reportsUnreachableCohort} rather than in the write module, because both are
+ * whole-chain type tests over an upstream error class and the read side may yet want this one.
+ *
+ * Matched by TYPE, as every classifier here is. NOTE: an error built by a second loaded copy of
+ * `@optimystic/db-core`, or one rebuilt as a plain `Error` from its text, fails `instanceof`.
+ * That direction is the UNSAFE one for a veto — a missed veto retries a hopeless write — unlike
+ * the claims above, where a missed claim merely declines to retry. The same risk
+ * {@link reportsUnreachableCohort} accepts, and no path in this repo loads two copies.
+ */
+export function reportsCohortOutOfSpace(links: readonly Error[]): boolean {
+	return links.some(link => link instanceof CohortOutOfSpaceError);
 }
 
 /**

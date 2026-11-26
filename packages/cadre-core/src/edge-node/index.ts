@@ -15,6 +15,7 @@ export {
 	type UnfinishedRemoval,
 } from './edge-node.js';
 export {
+	DEFAULT_DEVICE_STORAGE_ALLOTMENT_BYTES,
 	DEFAULT_EDGE_NODE_NAMES,
 	type EdgeNodeNames,
 	type EdgeNodePlatform,
@@ -57,4 +58,3 @@ export {
 	type KvStoreApi,
 	type NodeLocalKv,
 } from './node-local.js';
-export { lazyRawStorage } from './lazy-raw-storage.js';

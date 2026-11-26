@@ -93,7 +93,7 @@ In offline mode it is also `undefined` for a transaction that is still queued, a
 
 ## A write the cohort has no room for
 
-A machine that has filled the storage it was given refuses to store anything new. When every machine assigned a write's blocks is in that state, the write is refused for want of space, and the refusal says so rather than looking like any other failure. How much a machine was given, and whether its operator can say rather than being bounded by the disk, is the node's own configuration ([Storage](../cadre/node.md#storage)).
+A machine that has filled the storage it was given refuses to store anything new. When every machine assigned a write's blocks is in that state, the write is refused for want of space, and the refusal says so rather than looking like any other failure. How much a machine was given, and whether its operator can say rather than being bounded by the disk, is the node's own configuration ([The storage allotment](../cadre/node-storage.md#the-storage-allotment)).
 
 What an app sees depends on whether the strand is in offline mode.
 

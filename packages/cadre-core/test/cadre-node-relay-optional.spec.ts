@@ -8,7 +8,7 @@ import { circuitRelayServer } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { deadRelayAddr, freePort } from './relay-test-addrs.js';
 
@@ -43,7 +43,7 @@ describe('CadreNode start() with network.requireRelay: false', () => {
       privateKey: await generateKeyPair('Ed25519'),
       nodeClass: 'device',
       strandFilter: { mode: 'none' },
-      storage: { provider: () => new MemoryRawStorage() },
+      storage: { open: async () => memoryNodeStorage() },
       network: { listenAddrs: [], relayAddrs, requireRelay: false }
     });
   }

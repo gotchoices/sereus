@@ -3,12 +3,14 @@ import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } fr
 import type { Connection, IdentifyResult, Libp2p, PeerId, PeerUpdate, PrivateKey } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache, appSchemaRefusalOf, type AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
+import { createLibp2pNode, type NodeStorage, type ReadCacheLease } from '@optimystic/db-p2p';
+import { appSchemaRefusalOf, type AppSchemaRefusedError } from '@serfab/quereus-plugin-sereus';
+import { cachedNodeStorage, releaseReadCacheLease } from './node-storage-cache.js';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
   CadreNodeConfig,
+  StorageConfig,
   StrandInstance,
   StrandRow,
   StrandConfig,
@@ -644,14 +646,26 @@ export class CadreNode implements SAppIdLookup {
   /** The {@link stop} in progress, or null; a concurrent `stop()` awaits it. */
   private stopInFlight: Promise<void> | null = null;
   /**
-   * The control database's own raw storage (cache-wrapped), resolved once per
-   * `start()` and released in {@link cleanup}. Owning it is what keeps the
-   * provider call for the control scope — `controlStorageScope(partyId)`, see
-   * `storage-scope.ts` — a once-per-runtime call: a `stop()` then `start()` cycle
-   * on this object re-resolves against a live cache, and never orphans the
-   * previous wrapper's registration in the shared cache pool.
+   * The control scope's open storage with a read cache in front of its blocks, and this
+   * runtime's lease on that cache. Opened once per `start()` and released in
+   * {@link cleanup}. Owning it is what keeps the `storage.open` call for the control
+   * scope — `controlStorageScope(partyId)`, see `storage-scope.ts` — a once-per-runtime
+   * call: a `stop()` then `start()` cycle on this object re-opens against a live cache,
+   * and never orphans the previous lease in the shared cache pool.
+   *
+   * The `storage` here is what a node is built with: the opened value with `blocks`
+   * replaced by the cached view. Nothing closes the opened value — `StorageConfig.open`
+   * returns a `NodeStorage`, which has no `close()` to call (`types.ts`).
    */
-  private controlStorage: IRawStorage | null = null;
+  private controlStorage: { storage: NodeStorage; lease: ReadCacheLease | undefined } | null = null;
+  /**
+   * The {@link resolveControlStorage} open in flight, held so two concurrent first uses of
+   * the control scope cannot both enter `storage.open`. Both {@link buildControlNodeOptions}
+   * and {@link startControlBackfill} reach the resolver, and on LevelDB a second open over one
+   * handle throws outright. Cleared when the promise settles, so a failed open is retried
+   * rather than remembered.
+   */
+  private controlStorageOpening: Promise<{ storage: NodeStorage; lease: ReadCacheLease | undefined } | undefined> | null = null;
   /**
    * In-flight {@link serviceWake} operations keyed by strandId. Coalesces
    * concurrent on-demand wakes for the same strand into one runtime build + one
@@ -1765,7 +1779,7 @@ export class CadreNode implements SAppIdLookup {
       // this node is alone — like the strand one, it only does work when the
       // control libp2p node reports a peer connection, and arming it at start is
       // what closes the "genesised alone, headers never replicate" hole.
-      this.startControlBackfill();
+      await this.startControlBackfill();
 
       // Try a direct WebRTC connection in the background wherever this node ends up talking to
       // a machine through a relay. Nothing in libp2p does this, and since every dial a caller
@@ -2284,7 +2298,7 @@ export class CadreNode implements SAppIdLookup {
   }
 
   private async createControlNode(): Promise<Libp2p> {
-    return await createLibp2pNode(this.buildControlNodeOptions());
+    return await createLibp2pNode(await this.buildControlNodeOptions());
   }
 
   /**
@@ -2339,18 +2353,18 @@ export class CadreNode implements SAppIdLookup {
    * redemption this member is admitting ({@link admitRedeemingDevice}).
    *
    * No-ops (logged) when {@link controlBackfillStorage} answers nothing (disabled,
-   * or no control storage configured) or the node exposes no key network — the
+   * or no storage configured) or the node exposes no key network — the
    * backfill would have nothing to read or no way to dial.
    */
-  private startControlBackfill(): void {
+  private async startControlBackfill(): Promise<void> {
     if (!this.controlNode) {
       return;
     }
-    const storage = this.controlBackfillStorage();
+    const storage = await this.controlBackfillStorage();
     const keyNetwork = (this.controlNode as Libp2pNodeWithRepo).keyNetwork;
     if (!storage || !keyNetwork) {
       log('Control peer-join block catch-up is inert: %s',
-        !storage ? 'disabled, or no control storage configured' : 'control node exposes no keyNetwork');
+        !storage ? 'disabled, or no storage configured' : 'control node exposes no keyNetwork');
       return;
     }
     const networkName = this.controlNetworkName();
@@ -2358,7 +2372,9 @@ export class CadreNode implements SAppIdLookup {
       label: networkName,
       libp2p: this.controlNode,
       peerNetwork: keyNetwork,
-      storage,
+      // The blocks, read through the same leased cache the node reads through, so the
+      // catch-up's scan of the store is not a second uncached pass over it.
+      storage: storage.blocks,
       // The same prefix the receiver registered its block-transfer handler
       // under — derived from the same networkName binding the node options
       // used, never re-spelled here.
@@ -2484,48 +2500,71 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * The control database's cache-wrapped raw storage, resolved from
-   * `config.storage.provider` on first use and then held in {@link controlStorage}
-   * for the rest of this runtime.
+   * The control database's storage, opened through `config.storage.open` on first use with a
+   * read cache leased over its blocks, then held in {@link controlStorage} for the rest of
+   * this runtime.
    *
-   * Resolving once is the contract `RawStorageProvider` (types.ts) states: a provider is
-   * called once per scope per runtime lifetime. Re-entering it per call would mint a
-   * second store over one backend — a fresh, cold cache, with the previous wrapper's
-   * registration orphaned in the process-wide pool.
+   * Opening once is the contract `StorageConfig.open` (types.ts) states: it is called once per
+   * scope per runtime lifetime. Re-entering it per call would open a second set of stores over
+   * one location — a second lease, and on LevelDB an outright throw.
    *
    * Lazy rather than eager in `start()` so the pure-unit call path
-   * (`cadre-node-control-node-options.spec.ts` calls `buildControlNodeOptions` on a
+   * (`cadre-node-control-node-options.spec.ts` awaits `buildControlNodeOptions` on a
    * bare `new CadreNode`) still resolves — and, on that path too, only once.
    *
-   * Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's
-   * `cached-storage.ts`) because a control start's cost is its raw-storage
-   * operation count.
+   * The IN-FLIGHT promise is memoized as well as the resolved value
+   * ({@link controlStorageOpening}), because two callers can reach this before the first open
+   * settles: `buildControlNodeOptions` and `startControlBackfill` both ask.
+   *
+   * `blocks` goes behind Optimystic's write-through read cache (`withReadCache`) because a
+   * control start's cost is its raw-storage operation count. The lease is held for this
+   * runtime and released in {@link cleanup}; the node is handed a `blocks` that already
+   * reports `readCached`, so it takes no lease of its own and the cache survives every
+   * runtime rebuild — which is the point, since upstream starts a cache cold once the last
+   * lease over a location has released.
    */
-  private resolveControlStorage(): IRawStorage | undefined {
+  private async resolveControlStorage(): Promise<{ storage: NodeStorage; lease: ReadCacheLease | undefined } | undefined> {
     if (this.controlStorage) {
       return this.controlStorage;
     }
-    const provider = this.config.storage?.provider;
-    if (!provider) {
+    if (this.controlStorageOpening) {
+      return await this.controlStorageOpening;
+    }
+    const storageConfig = this.config.storage;
+    if (!storageConfig) {
       return undefined;
     }
+    const opening = this.openControlStorage(storageConfig);
+    this.controlStorageOpening = opening;
+    try {
+      return await opening;
+    } finally {
+      if (this.controlStorageOpening === opening) {
+        this.controlStorageOpening = null;
+      }
+    }
+  }
+
+  /** The body of {@link resolveControlStorage}'s first call: open the scope, lease the cache. */
+  private async openControlStorage(storageConfig: StorageConfig): Promise<{ storage: NodeStorage; lease: ReadCacheLease | undefined }> {
     // Party-scoped, not the bare literal 'control': the control database holds THIS
     // party's records, so two parties on one device must not land in one store.
     // Same key as the cache label, which also makes the shared pool's `stats()` readable.
     const scope = controlStorageScope(this.config.controlNetwork.partyId);
-    // The second seam that hands a scope key to an embedder's provider; the first
+    // The second seam that hands a scope key to an embedder's opener; the first
     // (`StrandInstanceManager.startStrand`) asserts the stricter strand rule. Holds by
     // construction today — lowercase hex is inside the charset — so this guards a future
     // edit to `controlStorageScope`, not a reachable input.
     assertScopeKeyCharset(scope);
-    const resolved = typeof provider === 'function' ? provider(scope) : provider;
-    this.controlStorage = wrapStorageWithCache(resolved, scope);
-    return this.controlStorage;
+    const opened = await storageConfig.open(scope);
+    const resolved = cachedNodeStorage(opened, scope);
+    this.controlStorage = resolved;
+    return resolved;
   }
 
   /**
-   * The store the control network's peer-join block catch-up reads, or `undefined` when this
-   * runtime does not arm it: `controlBackfill.enabled: false`, or no control storage. Both of
+   * The storage the control network's peer-join block catch-up reads, or `undefined` when this
+   * runtime does not arm it: `controlBackfill.enabled: false`, or no storage configured. Both of
    * its readers ask here so they cannot disagree: {@link startControlBackfill} arms on it, and
    * {@link buildControlNodeOptions} turns Optimystic's rebalance reaction off on it.
    *
@@ -2533,8 +2572,11 @@ export class CadreNode implements SAppIdLookup {
    * idempotent, so the catch-up cannot be silently disarmed by a future reordering that moves
    * a read ahead of the one that populated the field.
    */
-  private controlBackfillStorage(): IRawStorage | undefined {
-    return this.config.controlBackfill?.enabled === false ? undefined : this.resolveControlStorage();
+  private async controlBackfillStorage(): Promise<NodeStorage | undefined> {
+    if (this.config.controlBackfill?.enabled === false) {
+      return undefined;
+    }
+    return (await this.resolveControlStorage())?.storage;
   }
 
   /**
@@ -2584,10 +2626,13 @@ export class CadreNode implements SAppIdLookup {
    *
    * Split out of {@link createControlNode} purely so the mapping is assertable without
    * standing up a real libp2p node — `packages/cadre-core/test/cadre-node-control-node-options.spec.ts`
-   * calls it on a bare `new CadreNode(config)`. Read nothing else into the split; the
+   * awaits it on a bare `new CadreNode(config)`. Read nothing else into the split; the
    * only caller in production is `createControlNode`.
+   *
+   * `async` because opening a scope's storage is: every platform's one opener over three
+   * stores is asynchronous on IndexedDB and SQLite (`types.ts`, `StorageConfig.open`).
    */
-  private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
+  private async buildControlNodeOptions(): Promise<Parameters<typeof createLibp2pNode>[0]> {
     const { network } = this.config;
     const identityKey = this.identityKey;
     // `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH entry, which
@@ -2601,9 +2646,14 @@ export class CadreNode implements SAppIdLookup {
     // being silently dropped at bring-up. See `relay-addrs.ts`.
     const transportOptions = resolveTransportOptions(network, listenAddrs);
 
-    // The control node's own storage, resolved once per runtime (see
-    // {@link resolveControlStorage}) rather than per call.
-    const controlStorageProvider = this.resolveControlStorage();
+    // The control node's own storage, opened once per runtime (see
+    // {@link resolveControlStorage}) rather than per call, with the read cache already in
+    // front of its blocks — so the node passes that store through and takes no lease of its
+    // own, leaving the cache warm across every runtime rebuild.
+    const controlStorage = (await this.resolveControlStorage())?.storage;
+    // Asked here, not re-derived below: `controlBackfillStorage` goes through the same
+    // idempotent resolver, so this is the storage above or nothing.
+    const controlBackfillStorage = await this.controlBackfillStorage();
 
     const nodeOptions: Parameters<typeof createLibp2pNode>[0] = {
       port: 0,
@@ -2613,7 +2663,24 @@ export class CadreNode implements SAppIdLookup {
       // peers are dialed once bring-up ends ({@link dialControlBootstrapPeers}).
       bootstrapNodes: [],
       networkName: this.controlNetworkName(),
-      storage: controlStorageProvider,
+      // Absent when the embedder configured none, so Optimystic's own in-memory default
+      // applies AND it still logs the `node-wiring` warning naming what a restart then
+      // loses. Passing `memoryNodeStorage()` here would suppress that warning.
+      ...(controlStorage && { storage: controlStorage }),
+      // What the operator gave this network, unchanged — not divided by the strand count
+      // (see `StorageConfig.allotmentBytes`). Optimystic refuses anything but an integer
+      // above 0 at node construction; nothing is validated here, so that refusal has one home.
+      //
+      // Sereus deliberately exposes neither `thresholds` nor `usedBytesCacheTtlMs`: nothing has
+      // measured a reason to move them, and one number is what an operator understands
+      // (`docs/cadre/node.md` → "Limits and accepted tradeoffs").
+      //
+      // NOTE: `node.storageAccount` and `node.storagePressure` are PER NODE, and nothing in
+      // Sereus surfaces either. If an operator ever asks how full a machine is, the two readings
+      // have to be summed across this control node and every strand node the machine runs — one
+      // node's figures answer for one network's share, not the machine.
+      ...(this.config.storage?.allotmentBytes !== undefined
+        && { storageAllotment: { bytes: this.config.storage.allotmentBytes } }),
       fretProfile: this.roles.overlayTier,
       relay: this.relayServer.enabled,
       // Merged party-run defaults: no per-connection data/duration cap, a store sized for
@@ -2659,7 +2726,7 @@ export class CadreNode implements SAppIdLookup {
       // If storage nodes ever need them, turn the reaction back on: the catch-up already reports
       // its accepted pushes to the rebalance monitor (`reportBlockHeld`); measure whether the
       // growth arm still re-sends.
-      ...(this.controlBackfillStorage() && { rebalance: { enabled: false } }),
+      ...(controlBackfillStorage && { rebalance: { enabled: false } }),
       ...(identityKey && { privateKey: identityKey }),
       // With `network.relayAddrs` set, built with libp2p's relay discovery off (given a
       // transport list to wrap — `node-transports.ts`), so the supervisor
@@ -6198,18 +6265,17 @@ export class CadreNode implements SAppIdLookup {
       this.controlNode = null;
     }
 
-    // Release the control store's claim on its cache LAST — after the database and
-    // node that write through it are down. The wrapper counts holders, so this empties
-    // and unregisters the cache only if no other scope still holds it. Dropping the
-    // field is what lets a stop()/start() cycle re-resolve the provider against a live
-    // cache instead of handing the restarted node a retired wrapper. Logged, never
-    // thrown: a cache-bookkeeping failure must not abort a teardown.
+    // Release the control scope's lease on its block cache LAST — after the database and
+    // node that write through it are down. The cache is emptied and unregistered from the
+    // shared pool only if no other scope still holds a lease over that location. Dropping
+    // the field is what lets a stop()/start() cycle re-open the scope and take a fresh
+    // lease; a lease held past stop() would keep the cache claimed but unreleasable by the
+    // next open. Nothing is closed here — `StorageConfig.open` returns a `NodeStorage`,
+    // whose handle stays the embedder's (`types.ts`).
     if (this.controlStorage) {
       const controlStorage = this.controlStorage;
       this.controlStorage = null;
-      await disposeStorageCache(controlStorage).catch(
-        (err) => log('Failed to dispose control storage cache: %o', err)
-      );
+      await releaseReadCacheLease(controlStorage.lease, 'the control database', log);
     }
 
     // LAST, so every step above still ran against a node that considered itself up

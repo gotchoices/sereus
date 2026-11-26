@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { StrandInstanceManager, getStrandStoragePath, UNREACHABLE_JOIN_RETRY_MS } from '../src/strand-instance-manager.js';
+import { StrandInstanceManager, UNREACHABLE_JOIN_RETRY_MS } from '../src/strand-instance-manager.js';
 import { StrandDatabase } from '../src/strand-database.js';
 import { signSchema, SchemaVerificationError } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -378,26 +378,4 @@ describe('StrandInstanceManager', () => {
     });
   });
 
-  describe('getStrandStoragePath', () => {
-    it('should create isolated storage paths for strands', () => {
-      const basePath = '/data/sereus';
-
-      const path1 = getStrandStoragePath(basePath, 'strand-abc-123');
-      const path2 = getStrandStoragePath(basePath, 'strand-xyz-456');
-
-      expect(path1).toContain('strands');
-      expect(path1).toContain('strand-abc-123');
-      expect(path2).toContain('strand-xyz-456');
-      expect(path1).not.toBe(path2);
-    });
-
-    it('should sanitize unsafe characters in strandId', () => {
-      const basePath = '/data/sereus';
-
-      const path = getStrandStoragePath(basePath, 'strand/../unsafe');
-
-      // Should not contain the unsafe path traversal
-      expect(path).not.toContain('..');
-    });
-  });
 });

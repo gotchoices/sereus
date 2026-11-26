@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/ed25519-key.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
@@ -8,6 +7,7 @@ import {
 	controlNodeConfig,
 	expectNotListening,
 	freshPartyId,
+	memoryStorageProvider,
 	readColumn,
 	withinOp
 } from './control-db-node-helpers.js';
@@ -61,7 +61,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 			it('completes genesis, a read-back, a solo write, and a read-back of that write', async () => {
 				const partyId = freshPartyId(`solo-${nodeClass}-write`);
 				const keyStore = new InMemoryKeyStore();
-				const storage = new MemoryRawStorage();
+				const storage = memoryStorageProvider();
 				const node = new CadreNode(controlNodeConfig({ partyId, nodeClass, keyStore, storage }));
 
 				try {
@@ -125,15 +125,15 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		// Shared across both runs: same identity slot, same block storage — a warm
 		// restart, which enters ControlDatabase.initialize's catalog-hydrate path
 		// rather than the fresh-schema path.
-		// NOTE: `MemoryRawStorage` proves the hydrate-before-apply path but not the
+		// NOTE: in-memory storage proves the hydrate-before-apply path but not the
 		// storage backends embedders actually restart on (IndexedDB, RN, filesystem),
-		// and a shared instance keeps a live object across the restart boundary.
-		// `control-database-solo-warm-start.spec.ts` is the `FileRawStorage` variant —
+		// and the memoized opener keeps a live object across the restart boundary.
+		// `control-database-solo-warm-start.spec.ts` is the file-backed variant —
 		// same identity slot, but each run builds a fresh handle over the same
 		// directory, so only bytes on disk cross the boundary. Extend that file for a
 		// backend-specific hydrate bug rather than widening this memory one.
 		const keyStore = new InMemoryKeyStore();
-		const storage = new MemoryRawStorage();
+		const storage = memoryStorageProvider();
 		const config = () => controlNodeConfig({ partyId, nodeClass: 'device', keyStore, storage });
 
 		const first = new CadreNode(config());

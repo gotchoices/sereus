@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import {
 	InMemoryKeyStore,
 	MemoryBootstrapPeerStore,
@@ -39,7 +39,7 @@ function config(relayAddrs: string[] = [], allowPrivateDial = true) {
 		relayAddrs,
 		keyStore: new InMemoryKeyStore(),
 		// Never called: nothing here starts the node.
-		storageProvider: () => ({} as IRawStorage),
+		openStorage: async () => memoryNodeStorage(),
 		transports: [],
 		trustedOwnerStore: new MemoryTrustedOwnerStore(partyId),
 		bootstrapPeerStore: new MemoryBootstrapPeerStore(partyId),

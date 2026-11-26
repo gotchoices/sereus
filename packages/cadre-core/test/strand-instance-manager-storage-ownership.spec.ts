@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { MemoryRawStorage, defaultCachePool, type IRawStorage } from '@optimystic/db-p2p/rn';
+import { defaultCachePool, memoryNodeStorage, type IRawStorage, type NodeStorage } from '@optimystic/db-p2p/rn';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -8,16 +8,16 @@ import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 import { NODE_ROLE_PRESETS } from '../src/node-roles.js';
 
 /**
- * A strand instance OWNS one resolved raw storage for its lifetime.
+ * A strand instance OWNS one opened storage for its lifetime.
  *
- * `buildStrandRuntime` used to call the embedder's storage provider itself, and it
+ * `buildStrandRuntime` used to call the embedder's storage opener itself, and it
  * runs on both `startStrand` and `resumeStrand` — so a hibernation wake got a second
- * `IRawStorage` over the same durable backend. Three consequences, all pinned below:
- * the provider saw two calls for one strand, the rebuilt libp2p node was handed a
+ * set of stores over the same durable location. Three consequences, all pinned below:
+ * the opener saw two calls for one strand, the rebuilt libp2p node was handed a
  * different store than the first build, and (on the in-memory backend a `--storage
  * memory` CLI run and this suite both use) the strand's blocks vanished on resume.
- * The fourth test pins the release half: stopping the strand disposes the cache
- * wrapper, so a long-lived process does not accumulate one orphaned registration in
+ * The fourth test pins the release half: stopping the strand releases its cache lease,
+ * so a long-lived process does not accumulate one unreleasable registration in
  * the shared cache pool per strand stop.
  *
  * NOTE: the pool-count arms below measure `defaultCachePool().stats().stores.length`
@@ -84,80 +84,90 @@ function createSAppConfig(): SAppConfig {
 }
 
 /**
- * A launch config whose storage provider is `provider` — deliberately a FACTORY that
- * mints a fresh store per call (what `cadre-cli --storage memory` and the integration
- * harness's node fixtures do), since a memoizing provider would hide the defect.
+ * A launch config whose storage opener is `open` — deliberately one that mints a fresh
+ * set of stores per call (what `cadre-cli --storage memory` and the integration
+ * harness's node fixtures do), since a memoizing opener would hide the defect.
  */
-function createStartConfig(strandId: string, provider: (id: string) => IRawStorage): StartStrandConfig {
+function createStartConfig(strandId: string, open: (id: string) => Promise<NodeStorage>): StartStrandConfig {
   return {
     strandRow: createStrandRow(strandId),
     sAppConfig: createSAppConfig(),
     roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
-    storage: { provider }
+    storage: { open }
   };
 }
 
 /** The `storage` option handed to the Nth (0-based) `createLibp2pNode` call. */
-function storageOfCall(index: number): IRawStorage | undefined {
+function storageOfCall(index: number): NodeStorage | undefined {
   const calls = mocks.createLibp2pNode.mock.calls as unknown[][];
-  return (calls[index]![0] as { storage?: IRawStorage }).storage;
+  return (calls[index]![0] as { storage?: NodeStorage }).storage;
 }
 
 describe('StrandInstanceManager storage ownership', () => {
-  it('calls the storage provider once per strand id across quiesce -> resume', async () => {
+  it('opens the scope once per strand id across quiesce -> resume, and keeps the lease', async () => {
     const calls: string[] = [];
     const manager = new StrandInstanceManager();
+    const storesBefore = defaultCachePool().stats().stores.length;
 
-    await manager.startStrand(createStartConfig('s1', (id) => {
+    await manager.startStrand(createStartConfig('s1', async (id) => {
       calls.push(id);
-      return new MemoryRawStorage();
+      // Blocks that are not in-memory, so the lease is observable in the pool count.
+      return { ...memoryNodeStorage(), blocks: {} as IRawStorage };
     }));
+    expect(defaultCachePool().stats().stores.length).toBe(storesBefore + 1);
+
     await manager.quiesceStrand('s1');
+    // The lease is HELD across the hibernation: releasing it at quiesce would start the
+    // woken strand on a cold cache, which is the whole point of holding it for the
+    // instance's lifetime.
+    expect(defaultCachePool().stats().stores.length).toBe(storesBefore + 1);
     await manager.resumeStrand('s1');
 
     expect(calls).toEqual(['s1']);
+    expect(defaultCachePool().stats().stores.length).toBe(storesBefore + 1);
+    await manager.stopStrand('s1');
   });
 
-  it('hands the SAME IRawStorage instance to the rebuilt libp2p node', async () => {
+  it('hands the SAME storage value to the rebuilt libp2p node', async () => {
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('s2', () => new MemoryRawStorage()));
+    await manager.startStrand(createStartConfig('s2', async () => memoryNodeStorage()));
 
     await manager.quiesceStrand('s2');
     await manager.resumeStrand('s2');
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
-    expect(storageOfCall(0)).toBeInstanceOf(MemoryRawStorage);
+    expect(storageOfCall(0)).toBeDefined();
     expect(storageOfCall(1)).toBe(storageOfCall(0));
   });
 
   it('a block written before quiesce is still readable after resume', async () => {
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('s3', () => new MemoryRawStorage()));
+    await manager.startStrand(createStartConfig('s3', async () => memoryNodeStorage()));
 
     // Write through the store the FIRST build received...
     const beforeQuiesce = storageOfCall(0)!;
-    await beforeQuiesce.saveMetadata('block-1', { ranges: [[0]] });
+    await beforeQuiesce.blocks.saveMetadata('block-1', { ranges: [[0]] });
 
     await manager.quiesceStrand('s3');
     await manager.resumeStrand('s3');
 
-    // ...and read through the store the POST-RESUME build received. With a
-    // fresh-instance factory these are only the same block if the instance kept
-    // its store; otherwise the woken strand comes up empty.
+    // ...and read through the store the POST-RESUME build received. With an opener that
+    // mints a fresh value per call these are only the same block if the instance kept
+    // its storage; otherwise the woken strand comes up empty.
     const afterResume = storageOfCall(1)!;
-    expect(await afterResume.getMetadata('block-1')).toEqual({ ranges: [[0]] });
+    expect(await afterResume.blocks.getMetadata('block-1')).toEqual({ ranges: [[0]] });
   });
 
-  it('stopping the strand disposes its cache wrapper exactly once, leaving no pool registration behind', async () => {
-    // A non-Memory store, since `wrapStorageWithCache` passes MemoryRawStorage
+  it('stopping the strand releases its cache lease exactly once, leaving no pool registration behind', async () => {
+    // Blocks that are not in-memory, since `withReadCache` passes an in-memory block store
     // through unwrapped — there would be no pool registration to leak. The bare
     // object never has a method called on it here: only the wrap, the pool
-    // registration, and the dispose are under test.
+    // registration, and the release are under test.
     const manager = new StrandInstanceManager();
     const storesBefore = defaultCachePool().stats().stores.length;
 
-    await manager.startStrand(createStartConfig('s4', () => ({}) as IRawStorage));
+    await manager.startStrand(createStartConfig('s4', async () => ({ ...memoryNodeStorage(), blocks: {} as IRawStorage })));
     expect(defaultCachePool().stats().stores.length).toBe(storesBefore + 1);
 
     // The wake must NOT register a second store...
@@ -170,22 +180,23 @@ describe('StrandInstanceManager storage ownership', () => {
     expect(defaultCachePool().stats().stores.length).toBe(storesBefore);
   });
 
-  it('a failed launch releases the store it resolved, so a retry starts from a live cache', async () => {
+  it('a failed launch releases the lease it took, so a retry starts from a live cache', async () => {
     const manager = new StrandInstanceManager();
     const storesBefore = defaultCachePool().stats().stores.length;
 
     mocks.initialize.mockRejectedValueOnce(new Error('schema apply boom'));
     await expect(
-      manager.startStrand(createStartConfig('s5', () => ({}) as IRawStorage))
+      manager.startStrand(createStartConfig('s5', async () => ({ ...memoryNodeStorage(), blocks: {} as IRawStorage })))
     ).rejects.toThrow(/schema apply boom/);
 
     expect(manager.hasStrand('s5')).toBe(false);
     expect(defaultCachePool().stats().stores.length).toBe(storesBefore);
   });
 
-  it('a strand launched with no storage provider still starts, quiesces, resumes and stops', async () => {
+  it('a strand launched with no storage opener still starts, quiesces, resumes and stops', async () => {
     // The no-storage path (`storage` omitted) must stay a plain absence, not a
-    // map lookup that throws — the node simply gets `storage: undefined`.
+    // map lookup that throws — the node is simply given no `storage` option at all, which
+    // is also what keeps Optimystic's own in-memory warning from being suppressed.
     const manager = new StrandInstanceManager();
     await manager.startStrand({
       strandRow: createStrandRow('s6'),

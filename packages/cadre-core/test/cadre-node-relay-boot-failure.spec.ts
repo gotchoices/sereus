@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { deadRelayAddr } from './relay-test-addrs.js';
 import { RelayReservationFailedError } from '../src/relay-addrs.js';
@@ -27,7 +27,7 @@ describe('CadreNode start() failing on its relay reservation', () => {
       privateKey: await generateKeyPair('Ed25519'),
       nodeClass: 'device',
       strandFilter: { mode: 'none' },
-      storage: { provider: () => new MemoryRawStorage() },
+      storage: { open: async () => memoryNodeStorage() },
       // No direct listener either, so the reservation is the node's only reachability —
       // the shape an operator who names a relay is actually describing.
       network: { listenAddrs: [], relayAddrs: [await deadRelayAddr()], ...(requireRelay !== undefined && { requireRelay }) }

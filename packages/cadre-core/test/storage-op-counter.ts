@@ -246,6 +246,11 @@ export class CountingRawStorage implements IRawStorage {
 		return this.inner.promotePendingTransaction(blockId, actionId);
 	}
 
+	deleteBlock(blockId: BlockId): Promise<void> {
+		this.counter.record('deleteBlock', blockId);
+		return this.inner.deleteBlock(blockId);
+	}
+
 	flush(options?: FlushOptions): Promise<void> {
 		this.counter.recordBarrier('flush');
 		return this.inner.flush(options);

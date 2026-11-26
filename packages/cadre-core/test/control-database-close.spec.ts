@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { ControlDatabase } from '../src/control-database.js';
 import { freshKeyPair } from './control-constraint-helpers.js';
 import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
@@ -13,7 +13,7 @@ import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
 describe('ControlDatabase.close', () => {
 	it('closes Quereus, and waits for it, before stopping the control node', async () => {
 		const partyId = freshPartyId('control-close');
-		const node = await createControlNode(partyId, new MemoryRawStorage());
+		const node = await createControlNode(partyId, memoryNodeStorage());
 		const controlDb = new ControlDatabase({ partyId, libp2pNode: node, coordinatedRepo: node.coordinatedRepo });
 		try {
 			await controlDb.initialize();

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
 	BlockUnavailableError,
+	CohortOutOfSpaceError,
 	CoordinatorPartialCommitError,
 	PeersIncompleteError,
 	PromiseShortfallError,
@@ -474,6 +475,29 @@ describe('isRetriableControlWriteFailure', () => {
 	 */
 	it('never retries the cancel-discharge aggregate', () => {
 		expect(isRetriableControlWriteFailure(nested(cancelDischargeAggregate()))).toBe(false);
+	});
+
+	/**
+	 * The cohort had no room, so the write is over: nothing about its revision is the problem, so a
+	 * re-read and rebase sends the same bytes to the same full machines, and every attempt after the
+	 * first would spend budget on a write that cannot succeed.
+	 *
+	 * Two arms, because a matcher alone would not be enough. The bare chain would be declined by
+	 * omission anyway; the SECOND arm is the one that needs the veto — `isUncommittedTransactorAggregate`
+	 * claims a promise-phase aggregate on the phase alone, whatever the cause inside it says (its own
+	 * accepted-tradeoff `NOTE:` keeps that deliberately), so an out-of-space refusal arriving there
+	 * would be re-presented up to `CONTROL_WRITE_ATTEMPTS` times without `reportsCohortOutOfSpace`
+	 * running before every claim.
+	 */
+	it('never retries a cohort with no room, even inside a pend aggregate', () => {
+		const outOfSpace = (): CohortOutOfSpaceError => new CohortOutOfSpaceError(
+			{ peerIds: ['12D3KooWa', '12D3KooWb'], approvals: 1, peerCount: 3, needed: 3 });
+
+		expect(isRetriableControlWriteFailure(nested(outOfSpace()))).toBe(false);
+
+		expect(isRetriableControlWriteFailure(nested(PeersIncompleteError.peersDidNotComplete('pend',
+			`12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=${outOfSpace().message}`,
+			outOfSpace())))).toBe(false);
 	});
 
 	/**

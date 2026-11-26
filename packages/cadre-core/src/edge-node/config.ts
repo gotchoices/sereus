@@ -13,7 +13,7 @@ import type { BootstrapPeerStore } from '../bootstrap-peer-store.js';
 import type { EnrolledMachineStore } from '../enrolled-machine-store.js';
 import type { StrandNetworkStateStore } from '../strand-network-state.js';
 import type { TrustedOwnerStore } from '../trusted-owner-store.js';
-import type { IKVStore, IRawStorage, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+import type { IKVStore, Libp2pTransports, NodeStorage, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { EdgeNodeOptions } from './options.js';
 
 /** What {@link buildEdgeNodeConfig} takes: one start's options plus what the platform built. */
@@ -26,11 +26,16 @@ export interface EdgeNodeConfigInputs extends EdgeNodeOptions {
 	 */
 	keyStore: KeyStore;
 	/**
-	 * Raw block storage per cadre-core storage scope: `controlStorageScope(partyId)` for the
+	 * All of one cadre-core storage scope's storage: `controlStorageScope(partyId)` for the
 	 * control network, the strand id for each strand. The key is already safe as a database-name
-	 * segment — use it verbatim, do not parse it.
+	 * segment — use it verbatim, do not parse it. See `EdgeNodeStorage.nodeStorage`.
 	 */
-	storageProvider: (scope: string) => IRawStorage;
+	openStorage: (scope: string) => Promise<NodeStorage>;
+	/**
+	 * What the platform declares for every node over this storage (`EdgeNodeStorage.allotmentBytes`).
+	 * Absent: no allotment is stated, and each node measures against whatever its backend reports free.
+	 */
+	allotmentBytes?: number;
 	/**
 	 * A strand's offline journal (`EdgeNodeStorage.offlineJournal`). Absent: no offline mode, and
 	 * {@link EdgeNodeOptions.strandOfflineMode} is ignored.
@@ -73,7 +78,8 @@ export function buildEdgeNodeConfig(inputs: EdgeNodeConfigInputs): CadreNodeConf
 		},
 		nodeClass: 'device',
 		storage: {
-			provider: inputs.storageProvider,
+			open: inputs.openStorage,
+			...(inputs.allotmentBytes !== undefined && { allotmentBytes: inputs.allotmentBytes }),
 		},
 		network: {
 			transports: inputs.transports,

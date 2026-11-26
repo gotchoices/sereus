@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { DEFAULT_CONNECTION_MONITOR } from '../src/types.js';
 import type {
@@ -38,8 +38,8 @@ describe('Types', () => {
         nodeClass: 'server',
         strandFilter: { mode: 'all' },
         storage: {
-          provider: () => new MemoryRawStorage(),
-          quotaBytes: 1024 * 1024 * 1024
+          open: async () => memoryNodeStorage(),
+          allotmentBytes: 1024 * 1024 * 1024
         },
         network: {
           listenAddrs: ['/ip4/0.0.0.0/tcp/4001'],
@@ -56,7 +56,8 @@ describe('Types', () => {
 
       expect(config.privateKey).toBe(privateKey);
       expect(config.nodeClass).toBe('server');
-      expect(config.storage?.provider).toBeDefined();
+      expect(config.storage?.open).toBeDefined();
+      expect(config.storage?.allotmentBytes).toBe(1024 * 1024 * 1024);
       expect(config.hibernation?.enabled).toBe(true);
     });
   });

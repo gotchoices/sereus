@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
+import type { NodeStorage } from '@optimystic/db-p2p';
 import { COST_PRESETS } from '@quereus/quereus';
 import type { Database } from '@quereus/quereus';
 import { ControlDatabase } from '../src/control-database.js';
@@ -31,7 +31,7 @@ import { createControlNode, freshPartyId } from './control-db-node-helpers.js';
  * migrated by the apply and keeps its rows, and every other store is refused with a reason.
  * One case for the migration, one per reason.
  *
- * Each "lifetime" is a fresh libp2p node and `ControlDatabase` over the SAME `MemoryRawStorage`,
+ * Each "lifetime" is a fresh libp2p node and `ControlDatabase` over the SAME in-memory storage,
  * so only stored blocks cross from one start to the next. The store's schema is chosen by
  * `schemaPath`: a file holding a variant of a schema, or `undefined` for the embedded schema,
  * i.e. this build. The migration case runs between the two "releases"
@@ -60,7 +60,7 @@ afterAll(async () => {
  * throws.
  */
 async function lifetime<T>(
-	storage: IRawStorage,
+	storage: NodeStorage,
 	partyId: string,
 	schemaPath: string | undefined,
 	read: (controlDb: ControlDatabase) => Promise<T> | T
@@ -101,7 +101,7 @@ const hasTable = (db: Database, name: string): boolean =>
 describe("the control database's read cost", () => {
 	it("prices its tables as this machine's own storage, since every member holds every block", async () => {
 		const partyId = freshPartyId('read-cost');
-		const profile = await lifetime(new MemoryRawStorage(), partyId, undefined,
+		const profile = await lifetime(memoryNodeStorage(), partyId, undefined,
 			controlDb => controlDb.getDatabase().schemaManager.getModule('optimystic')?.module.costProfile);
 		expect(profile).toEqual(COST_PRESETS.localDisk);
 	});
@@ -110,7 +110,7 @@ describe("the control database's read cost", () => {
 describe('a control store written under another control schema version', () => {
 	it('from the previous version: migrates on start and keeps its rows', async () => {
 		const partyId = freshPartyId('migrates');
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 		const previous = await writeSchemaFile(schemaDir, 'previous', releases.previous);
 		const next = await writeSchemaFile(schemaDir, 'next', releases.next);
 		const owner = freshKeyPair();
@@ -163,7 +163,7 @@ describe('a control store written under another control schema version', () => {
 		// delete files a tombstone through `Revocation.RowIsGone`, whose body changed in version 4.
 		// The store already holds a tombstone, as a real party's does, when that CHECK is re-added.
 		const partyId = freshPartyId('from-baseline');
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 		const baseline = await writeSchemaFile(schemaDir, 'baseline', releases.base);
 		const owner = freshKeyPair();
 		const sign = (message: Uint8Array): string => signAs(owner, message);
@@ -191,7 +191,7 @@ describe('a control store written under another control schema version', () => {
 		// a `create index` — additive — and only the version refuses it. Applying it would leave
 		// the newer release a store it must refuse in turn (`drop index`).
 		const partyId = freshPartyId('newer-release');
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 		const newer = await writeSchemaFile(schemaDir, 'newer-without-index', replaceOnce(
 			buildAtVersion(CONTROL_SCHEMA_VERSION + 1),
 			'    index FormationUsageByToken on FormationUsage (Token);\n',
@@ -214,7 +214,7 @@ describe('a control store written under another control schema version', () => {
 		// A store that records no version (1.16.0 and earlier) reads as 0. The build adds a
 		// table, so the diff is additive, and only the baseline refuses it.
 		const partyId = freshPartyId('before-migrations');
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 		const preVersion = await writeSchemaFile(schemaDir, 'pre-version', withoutVersion(CONTROL_SCHEMA, CONTROL_SCHEMA_VERSION));
 		await lifetime(storage, partyId, preVersion, noRead);
 
@@ -238,7 +238,7 @@ describe('a control store written under another control schema version', () => {
 		// `drop table` is the only thing against it. Reachable only from a development or hand-made
 		// store, since the edit-time check keeps every shipped version migratable.
 		const partyId = freshPartyId('not-migratable');
-		const storage = new MemoryRawStorage();
+		const storage = memoryNodeStorage();
 		const storeSchema = await writeSchemaFile(schemaDir, 'build-with-legacy', withLegacyTable(CONTROL_SCHEMA));
 		await lifetime(storage, partyId, storeSchema, noRead);
 

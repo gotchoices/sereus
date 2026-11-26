@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
+import type { NodeStorage } from '@optimystic/db-p2p';
 import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 import { generatePrivateKey, getPublicKey, digest, verify } from '@optimystic/quereus-plugin-crypto';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
@@ -22,7 +23,7 @@ import { makeSAppConfig, tableCount } from './strand-spec-helpers.js';
  *
  * The pure-crypto tests (key bridge round-trip, single-digest signer) are fast and
  * need no DB. The founder-bootstrap tests run a REAL strand DB on the local
- * transactor (libp2p node + MemoryRawStorage, no peers consulted) via `connectToStrand`
+ * transactor (libp2p node + in-memory storage, no peers consulted) via `connectToStrand`
  * — the same path `StrandDatabase` uses — so they exercise the real apply / DML /
  * deferred-constraint path, not a fake.
  */
@@ -84,7 +85,7 @@ describe('signStrandPayload (single-digest ed25519 signer)', () => {
 interface OpenStrand {
   db: Database;
   strandId: string;
-  storage: MemoryRawStorage;
+  storage: NodeStorage;
   createEmptyCollections: () => Promise<number>;
   shutdown: () => Promise<void>;
 }
@@ -97,7 +98,7 @@ interface OpenStrand {
  */
 async function openStrandDb(
   strandId: string = randomUUID(),
-  storage: MemoryRawStorage = new MemoryRawStorage(),
+  storage: NodeStorage = memoryNodeStorage(),
 ): Promise<OpenStrand> {
   const db = new Database();
   const result = await connectToStrand(db, { strandId, transactor: 'local', storage });
@@ -197,7 +198,7 @@ describe('bootstrapFounderMembership', () => {
     const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
 
     // Cold session: bootstrap a closed strand, then shut the connection down,
-    // leaving the rows persisted in the shared MemoryRawStorage blocks.
+    // leaving the rows persisted in the shared in-memory blocks.
     const cold = await openStrandDb();
     const { strandId, storage } = cold;
     const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair };

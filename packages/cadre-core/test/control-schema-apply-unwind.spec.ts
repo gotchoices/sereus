@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { Database } from '@quereus/quereus';
 import { ControlDatabase } from '../src/control-database.js';
@@ -148,8 +148,11 @@ async function readCatalog(db: Database): Promise<Map<string, string[]>> {
 describe('apply schema CadreControl, unwound by a refused DDL step', () => {
 	it('leaves storage and the catalog in step, and the next apply reaches the whole schema', async () => {
 		const partyId = freshPartyId('schema-apply-unwind');
-		const gate = gateBlock(new MemoryRawStorage(), CADRE_PEER_BLOCK);
-		const node = await createControlNode(partyId, gate.storage);
+		// The gate fronts the BLOCKS only: the key-value store and piece store beside them are
+		// what the node keeps its own records in, and nothing here gates those.
+		const base = memoryNodeStorage();
+		const gate = gateBlock(base.blocks, CADRE_PEER_BLOCK);
+		const node = await createControlNode(partyId, { ...base, blocks: gate.storage });
 		const controlDb = new ControlDatabase({
 			partyId,
 			libp2pNode: node,

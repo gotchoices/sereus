@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import type { OptimysticNode } from '@optimystic/db-p2p';
 import { buildAuthorizationMessage, ControlDatabase } from '../src/control-database.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
@@ -26,7 +26,7 @@ describe('StrandPeer and PendingStrandPartyKey', () => {
 		const identity = await generateKeyPair('Ed25519');
 		const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(identity);
 		machine = { privateKey: privateKeyB64, publicKey: publicKeyB64 };
-		node = await createControlNode(partyId, new MemoryRawStorage(), identity);
+		node = await createControlNode(partyId, memoryNodeStorage(), identity);
 		db = new ControlDatabase({ partyId, libp2pNode: node, coordinatedRepo: node.coordinatedRepo });
 		await db.initialize();
 		expect(await db.ensureOwnerKey(owner.publicKey)).toBe(true);

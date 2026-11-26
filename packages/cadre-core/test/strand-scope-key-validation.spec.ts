@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { IRawStorage } from '@optimystic/db-p2p/rn';
+import { memoryNodeStorage } from '@optimystic/db-p2p/rn';
+import type { NodeStorage } from '@optimystic/db-p2p/rn';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { isValidStrandScopeKey, InvalidStrandIdError } from '../src/storage-scope.js';
 import { mintStrandId, mintPlaceholderStrandId } from '../src/strand-id.js';
@@ -55,7 +56,7 @@ beforeEach(() => {
   authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 });
 
-function createStartConfig(strandId: string, provider: (id: string) => IRawStorage): StartStrandConfig {
+function createStartConfig(strandId: string, open: (id: string) => Promise<NodeStorage>): StartStrandConfig {
   const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
   const sAppConfig: SAppConfig = {
     id: authorPublicKey,
@@ -64,21 +65,21 @@ function createStartConfig(strandId: string, provider: (id: string) => IRawStora
     schema: testSchema,
     signature: signSchema({ schema: testSchema, version: testVersion, schemaVersion: testSchemaVersion }, authorPrivateKey)
   };
-  return { strandRow, sAppConfig, roles: NODE_ROLE_PRESETS.device, defaultLatencyHint: 'interactive', storage: { provider } };
+  return { strandRow, sAppConfig, roles: NODE_ROLE_PRESETS.device, defaultLatencyHint: 'interactive', storage: { open } };
 }
 
 describe('strand scope key validation', () => {
   it.each([
     ['a path traversal', '../../etc/passwd'],
     ['a control-database key', 'control-7061727479'],
-  ])('refuses a strand whose id is %s, without reaching the storage provider', async (_label, strandId) => {
+  ])('refuses a strand whose id is %s, without reaching the storage opener', async (_label, strandId) => {
     const seen: string[] = [];
     const manager = new StrandInstanceManager();
 
     await expect(
-      manager.startStrand(createStartConfig(strandId, (id) => {
+      manager.startStrand(createStartConfig(strandId, async (id) => {
         seen.push(id);
-        return {} as IRawStorage;
+        return memoryNodeStorage();
       }))
     ).rejects.toThrow(InvalidStrandIdError);
 

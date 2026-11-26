@@ -1517,9 +1517,9 @@ export class ControlDatabase {
     // issued) × per-operation storage latency: ~1ms/op on an idle machine, but
     // 50-90ms/op on a loaded disk or a phone's flash under launch contention. A cold
     // start now reaches the backend 48 times (10 tables + 1 index, 23 distinct blocks
-    // — dominated by its genuine writes), a warm restart 13, because cadre-core
-    // wraps every embedder storage in `@optimystic/db-p2p`'s write-through cache
-    // (@serfab/quereus-plugin-sereus's cached-storage.ts). Uncached the same start issued ~2000 operations — the
+    // — dominated by its genuine writes), a warm restart 13, because cadre-core leases
+    // `@optimystic/db-p2p`'s write-through read cache over every scope's block store
+    // (`withReadCache`, at `node-storage-cache.ts`). Uncached the same start issued ~2000 operations — the
     // upstream re-read amplification measured in
     // tickets/complete/optimystic-block-read-amplification-on-control-start.md (and
     // its follow-up ...-schema-catalog-reread-per-write-blows-storage-budgets.md),

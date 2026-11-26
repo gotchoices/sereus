@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { StrandInstanceManager, type StartStrandConfig } from '../src/strand-instance-manager.js';
 import type { StrandRow } from '../src/types.js';
 import { signedSApp } from './signed-sapp.js';
@@ -95,10 +95,10 @@ describe('claiming a hosted storage replica', () => {
     manager = new StrandInstanceManager();
     const strandRow: StrandRow = { Id: `replica-rows-refuse-${String(quiesceFirst)}`, MemberPrivateKey: null, Type: 'o', FounderOwnerKey: null, FounderPeerId: null };
     // One store and transport key for every launch, so the replica hydrates the founder's catalog and row.
-    const storage = new MemoryRawStorage();
+    const storage = memoryNodeStorage();
     const privateKey = await generateKeyPair('Ed25519');
     const launch = (overrides: Partial<StartStrandConfig>): StartStrandConfig =>
-      ({ strandRow, roles: NODE_ROLE_PRESETS.server, defaultLatencyHint: 'interactive', storage: { provider: () => storage }, privateKey, ...overrides });
+      ({ strandRow, roles: NODE_ROLE_PRESETS.server, defaultLatencyHint: 'interactive', storage: { open: async () => storage }, privateKey, ...overrides });
 
     const founded = await manager.startStrand(launch({ sAppConfig: signedSApp(), founder: true }));
     await founded.database!.getDatabase().exec(`insert into App.Note (Id) values ('n1')`);

@@ -59,7 +59,7 @@ describe('CadreNode.issueStrandMembershipInvite (responder side)', () => {
       strandFilter: { mode: 'none' },
       // Memoized per scope, so the pre-split test's relaunch below hydrates the rows
       // its seeding launch wrote instead of starting from an empty store.
-      storage: { provider: memoryStorageProvider() },
+      storage: { open: memoryStorageProvider() },
     }));
   }, 60_000);
 

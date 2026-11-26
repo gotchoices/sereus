@@ -1,5 +1,5 @@
 /**
- * storage-scope.ts — the scope keys `CadreNodeConfig.storage.provider` is called with.
+ * storage-scope.ts — the scope keys `CadreNodeConfig.storage.open` is called with.
  *
  * A provider is a factory cadre-core invokes once per **scope**: once for the control
  * database and once for each strand. A strand's scope key is its strand id; the control
@@ -169,7 +169,7 @@ export function assertStrandScopeKey(strandId: string): void {
  * The charset half of the rule on its own, for the CONTROL key.
  *
  * {@link assertStrandScopeKey} cannot serve here: it rejects the `control-` prefix by
- * design. Asserted at the seam that calls the provider (`CadreNode.resolveControlStorage`)
+ * design. Asserted at the seam that opens the scope (`CadreNode.openControlStorage`)
  * rather than inside {@link controlStorageScope}, so the guarantee belongs to the call
  * that hands a key out and not to one particular way of minting one.
  */

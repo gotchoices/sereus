@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
-import { CachedRawStorage, MemoryRawStorage, defaultCachePool, noisePureJsCrypto } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
+import type { createLibp2pNode, IRawStorage, NodeStorage } from '@optimystic/db-p2p';
+import { CachedRawStorage, defaultCachePool, memoryNodeStorage, noisePureJsCrypto } from '@optimystic/db-p2p';
 import type { ConnectionGater } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -11,7 +10,7 @@ import { controlStorageScope } from '../src/storage-scope.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CONNECTION_MONITOR, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
 import { MemoryEnrolledMachineStore } from '../src/enrolled-machine-store.js';
-import type { CadreNodeConfig } from '../src/types.js';
+import type { CadreNodeConfig, StorageConfig } from '../src/types.js';
 
 /**
  * `buildControlNodeOptions` is the private config→options mapping
@@ -44,9 +43,9 @@ function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
   };
 }
 
-function controlOptions(node: CadreNode): Parameters<typeof createLibp2pNode>[0] {
+function controlOptions(node: CadreNode): Promise<Parameters<typeof createLibp2pNode>[0]> {
   return (node as unknown as {
-    buildControlNodeOptions: () => Parameters<typeof createLibp2pNode>[0]
+    buildControlNodeOptions: () => Promise<Parameters<typeof createLibp2pNode>[0]>
   }).buildControlNodeOptions();
 }
 
@@ -91,23 +90,23 @@ describe('CadreNode control-network node options', () => {
    * documented on the constant.
    */
   describe('cluster replication breadth', () => {
-    it('replicates the control DB to the whole party, not the strand default', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('replicates the control DB to the whole party, not the strand default', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.clusterSize).toBe(CONTROL_REPLICATION_BREADTH);
       expect(options.clusterSize).toBeGreaterThan(DEFAULT_STRAND_CLUSTER_SIZE);
     });
 
-    it('is not configurable — strandClusterSize does not reach the control node', () => {
-      const options = controlOptions(new CadreNode(createConfig({ strandClusterSize: 3 })));
+    it('is not configurable — strandClusterSize does not reach the control node', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ strandClusterSize: 3 })));
 
       expect(options.clusterSize).toBe(CONTROL_REPLICATION_BREADTH);
     });
 
-    it('lets Optimystic shrink the cohort to the party that actually exists', () => {
+    it('lets Optimystic shrink the cohort to the party that actually exists', async () => {
       // Without `allowDownsize` a 16-wide target would never be satisfiable by a real
       // (2-7 node) party, so the two settings only make sense together.
-      const options = controlOptions(new CadreNode(createConfig()));
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.clusterPolicy?.allowDownsize).toBe(true);
       // Declared, not left to default. The admission gate would default to this same 2, but
@@ -117,21 +116,21 @@ describe('CadreNode control-network node options', () => {
       expect(options.clusterPolicy?.assumedClusterSize).toBe(2);
     });
 
-    it('builds a control-scoped network, keeping it distinct from any strand network', () => {
+    it('builds a control-scoped network, keeping it distinct from any strand network', async () => {
       const config = createConfig();
-      const options = controlOptions(new CadreNode(config));
+      const options = await controlOptions(new CadreNode(config));
 
       expect(options.networkName).toBe(`control-${config.controlNetwork.partyId}`);
     });
 
-    it('sets sizeTolerance alongside allowDownsize — a fixed 16-wide target has no other way to shrink', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('sets sizeTolerance alongside allowDownsize — a fixed 16-wide target has no other way to shrink', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.clusterPolicy?.sizeTolerance).toBe(0.5);
     });
 
-    it('leaves superMajorityThreshold unset, so control writes commit at Optimystic\'s 0.75', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('leaves superMajorityThreshold unset, so control writes commit at Optimystic\'s 0.75', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       // Absence is the setting: `libp2p-node-base.ts` resolves
       // `clusterPolicy?.superMajorityThreshold ?? DEFAULT_SUPER_MAJORITY_THRESHOLD` (0.75)
@@ -142,7 +141,7 @@ describe('CadreNode control-network node options', () => {
       expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
     });
 
-    it('routes network.cohortQueryTimeoutMs into the control node\'s read deadline', () => {
+    it('routes network.cohortQueryTimeoutMs into the control node\'s read deadline', async () => {
       // What this file owns is the WIRING: that the host's field reaches `clusterPolicy` at all.
       // The builder's own contract — the frozen base by identity when nothing is declared, a
       // count and a deadline not shadowing each other, and that the declared deadline exceeds
@@ -151,7 +150,7 @@ describe('CadreNode control-network node options', () => {
       //
       // 12000, not the 7000 default: an override equal to the declared default would also pass
       // against a node that dropped `network` on the floor.
-      const options = controlOptions(new CadreNode(createConfig({
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { cohortQueryTimeoutMs: 12_000 }
       })));
 
@@ -183,10 +182,10 @@ describe('CadreNode control-network node options', () => {
       await store.record(count);
       const node = new CadreNode({ ...config, enrolledMachines: { store } });
       captureEnrolledMachines(node);
-      return controlOptions(node);
+      return await controlOptions(node);
     }
 
-    it('declares nothing when the node has never recorded a count — the base policy, by identity', () => {
+    it('declares nothing when the node has never recorded a count — the base policy, by identity', async () => {
       // The cold-start path must be byte-for-byte the behaviour that shipped before
       // this record existed, which is what object identity proves: `controlClusterPolicy`
       // returns the frozen shared constant itself rather than a copy of it.
@@ -194,16 +193,16 @@ describe('CadreNode control-network node options', () => {
       const node = new CadreNode(config);
       captureEnrolledMachines(node);
 
-      const options = controlOptions(node);
+      const options = await controlOptions(node);
 
       expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
       expect(options.clusterPolicy?.repairCorroborationClusterSize).toBeUndefined();
     });
 
-    it('declares nothing when start() has not captured a count yet', () => {
+    it('declares nothing when start() has not captured a count yet', async () => {
       // `buildControlNodeOptions` reads a field, not the store, so a node that never
       // reached `initializeEnrolledMachineStore` declares nothing rather than throwing.
-      const options = controlOptions(new CadreNode(createConfig()));
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
     });
@@ -257,119 +256,159 @@ describe('CadreNode control-network node options', () => {
       const node = new CadreNode({ ...config, enrolledMachines: { store } });
 
       captureEnrolledMachines(node);
-      expect(controlOptions(node).clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
+      expect((await controlOptions(node)).clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
 
       // What `refreshAuthorizedControlPeers` does during the run...
       await store.record(4);
       // ...reaches the policy only at the next start(), never mid-process: Optimystic
       // froze the policy when the node was built and offers no runtime setter.
       captureEnrolledMachines(node);
-      expect(controlOptions(node).clusterPolicy?.repairCorroborationClusterSize).toBe(4);
+      expect((await controlOptions(node)).clusterPolicy?.repairCorroborationClusterSize).toBe(4);
     });
   });
 
   describe('storage', () => {
-    it("calls a factory provider exactly once with this party's control scope key, and hands the node the cached wrap", async () => {
+    /** A `StorageConfig.open` that records each scope it is asked for and hands back one value. */
+    function recordingOpen(storage: NodeStorage): { open: StorageConfig['open']; calls: string[] } {
       const calls: string[] = [];
-      const instance = {} as IRawStorage;
-      const config = createConfig({ storage: { provider: (scope) => { calls.push(scope); return instance; } } });
+      return { open: async (scope) => { calls.push(scope); return storage; }, calls };
+    }
 
-      const options = controlOptions(new CadreNode(config));
+    /** Storage whose `blocks` is not in-memory, so `withReadCache` really wraps it. */
+    function cacheableStorage(): NodeStorage {
+      return { ...memoryNodeStorage(), blocks: {} as IRawStorage };
+    }
+
+    it("opens the scope exactly once with this party's control scope key, and hands the node the cached blocks", async () => {
+      const storage = cacheableStorage();
+      const { open, calls } = recordingOpen(storage);
+      const config = createConfig({ storage: { open } });
+      const node = new CadreNode(config);
+
+      const options = await controlOptions(node);
 
       // The control scope carries the party id, so two parties on one device get two
       // stores — the property itself is pinned in `control-storage-scope.spec.ts`.
       expect(calls).toEqual([controlStorageScope(config.controlNetwork.partyId)]);
-      // The node gets the write-through cached view of the provided storage, and the
-      // wrap is memoized per inner instance — a second resolution of the same instance
-      // must reuse the same cache, never stack a second one over the same backend.
-      // Asserting THROUGH the helper takes a holder claim, so release it again: the pair
-      // must balance, and the node under test still holds the claim keeping it live.
-      const cached = wrapStorageWithCache(instance, calls[0]!);
-      expect(options.storage).toBeInstanceOf(CachedRawStorage);
-      expect(options.storage).toBe(cached);
-      await disposeStorageCache(cached);
+      // The node is handed the opened value with the read cache in front of its blocks, so it
+      // passes that store through and takes no lease of its own — which is what keeps the cache
+      // warm across every runtime rebuild.
+      expect(options.storage?.blocks).toBeInstanceOf(CachedRawStorage);
+      // The two stores beside `blocks` reach the node untouched, from the same opened value:
+      // a `pieces` from somewhere else would be counted twice in the node's storage account.
+      expect(options.storage?.kv).toBe(storage.kv);
+      expect(options.storage?.pieces).toBe(storage.pieces);
+      await nodeCleanup(node);
     });
 
-    it('passes an instance provider through the same memoized cached wrap', async () => {
-      const instance = {} as IRawStorage;
-      const config = createConfig({ storage: { provider: instance } });
+    it('passes in-memory blocks through unwrapped (nothing to save caching memory)', async () => {
+      const storage = memoryNodeStorage();
+      const config = createConfig({ storage: { open: async () => storage } });
 
-      const options = controlOptions(new CadreNode(config));
+      const options = await controlOptions(new CadreNode(config));
 
-      const cached = wrapStorageWithCache(instance, controlStorageScope(config.controlNetwork.partyId));
-      expect(options.storage).toBeInstanceOf(CachedRawStorage);
-      expect(options.storage).toBe(cached);
-      await disposeStorageCache(cached);
+      expect(options.storage?.blocks).toBe(storage.blocks);
     });
 
-    it('passes a MemoryRawStorage instance through unwrapped (nothing to save caching memory)', () => {
-      const instance = new MemoryRawStorage();
-      const config = createConfig({ storage: { provider: instance } });
-
-      const options = controlOptions(new CadreNode(config));
-
-      expect(options.storage).toBe(instance);
-    });
-
-    it('leaves storage undefined when no storage config is supplied', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('leaves storage undefined when no storage config is supplied', async () => {
+      // Absent rather than `memoryNodeStorage()`, so Optimystic still logs the `node-wiring`
+      // warning naming what a restart then loses — passing an explicit in-memory value is how a
+      // host says it meant the memory case, and would suppress it.
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.storage).toBeUndefined();
     });
 
+    it('passes the operator allotment through unchanged, and states none when there is none', async () => {
+      // Unchanged and NOT divided by the strand count: a node's allotment is fixed when the node
+      // is built while the strand count changes as it runs (`StorageConfig.allotmentBytes`).
+      const withAllotment = await controlOptions(new CadreNode(createConfig({
+        storage: { open: async () => memoryNodeStorage(), allotmentBytes: 7 * 2 ** 30 }
+      })));
+      expect(withAllotment.storageAllotment).toEqual({ bytes: 7 * 2 ** 30 });
+
+      const without = await controlOptions(new CadreNode(createConfig({
+        storage: { open: async () => memoryNodeStorage() }
+      })));
+      expect(without.storageAllotment).toBeUndefined();
+    });
+
     /**
-     * The control store belongs to the NODE, not to the call that builds its options.
+     * The control storage belongs to the NODE, not to the call that builds its options.
      * `buildControlNodeOptions` runs once per `CadreNode.start()`, and `start()` is
-     * guarded only by `_running` — which `stop()` clears — so a re-resolution per call
-     * would mint a second store over one backend on a stop()/start() cycle, leaving the
-     * first wrapper's registration orphaned in the process-wide cache pool. These two
-     * pin the resolve-once rule `RawStorageProvider` states.
+     * guarded only by `_running` — which `stop()` clears — so a re-open per call
+     * would open a second set of stores over one location on a stop()/start() cycle, leaving
+     * the first lease unreleasable in the process-wide cache pool. These two
+     * pin the open-once rule `StorageConfig.open` states.
      */
-    it('resolves the provider once per node, not once per call', () => {
-      const calls: string[] = [];
-      const instance = {} as IRawStorage;
-      const config = createConfig({ storage: { provider: (scope) => { calls.push(scope); return instance; } } });
+    it('opens the scope once per node, not once per call', async () => {
+      const { open, calls } = recordingOpen(cacheableStorage());
+      const config = createConfig({ storage: { open } });
       const node = new CadreNode(config);
 
-      const first = controlOptions(node);
-      const second = controlOptions(node);
+      const first = await controlOptions(node);
+      const second = await controlOptions(node);
 
       expect(calls).toEqual([controlStorageScope(config.controlNetwork.partyId)]);
       expect(second.storage).toBe(first.storage);
+      await nodeCleanup(node);
     });
 
-    it('holds the store even when the factory mints a fresh instance per call', () => {
-      // The memo in `wrapStorageWithCache` is keyed on the inner instance, so it cannot
-      // help here — only the node's own ownership can.
-      let minted = 0;
-      const config = createConfig({ storage: { provider: () => { minted++; return {} as IRawStorage; } } });
+    it('opens the scope once even when two callers ask before the first open settles', async () => {
+      // `buildControlNodeOptions` and `startControlBackfill` both reach the resolver, and the
+      // open is asynchronous now — so the IN-FLIGHT promise has to be memoized, not just the
+      // resolved value. On LevelDB a second open over one handle throws outright.
+      let opens = 0;
+      const config = createConfig({
+        storage: {
+          open: async () => {
+            opens++;
+            await Promise.resolve();
+            return cacheableStorage();
+          }
+        }
+      });
       const node = new CadreNode(config);
 
-      const first = controlOptions(node);
-      const second = controlOptions(node);
+      const [first, second] = await Promise.all([controlOptions(node), controlOptions(node)]);
+
+      expect(opens).toBe(1);
+      expect(second.storage).toBe(first.storage);
+      await nodeCleanup(node);
+    });
+
+    it('holds the storage even when the opener mints a fresh value per call', async () => {
+      // Nothing below the node can help here: `withReadCache` dedupes by store identity or
+      // object, and a fresh object per call reports neither. Only the node's own ownership can.
+      let minted = 0;
+      const config = createConfig({ storage: { open: async () => { minted++; return cacheableStorage(); } } });
+      const node = new CadreNode(config);
+
+      const first = await controlOptions(node);
+      const second = await controlOptions(node);
 
       expect(minted).toBe(1);
       expect(second.storage).toBe(first.storage);
+      await nodeCleanup(node);
     });
 
     /**
      * The release half of the same ownership rule. `cleanup()` runs on every `stop()`
-     * and on a failed `start()`; if it did not drop the field, a `stop()`/`start()`
-     * cycle would hand the restarted control node the RETIRED wrapper (its pool store
-     * id is unregistered and never reused), and the wrapper's registration would sit
-     * in the process-wide pool for the process lifetime. `cleanup` is safe to call on
-     * a bare node — every handle it touches is either null or a constructor-built
-     * object whose stop/dispose is a no-op when never started.
+     * and on a failed `start()`; if it did not release the lease and drop the field, a
+     * `stop()`/`start()` cycle would leave the cache claimed over a location the next open
+     * can never release, and its registration would sit in the process-wide pool for the
+     * process lifetime. `cleanup` is safe to call on a bare node — every handle it touches is
+     * either null or a constructor-built object whose stop/dispose is a no-op when never started.
      */
-    it('cleanup retires the control store registration it created', async () => {
+    it('cleanup releases the control cache lease it took', async () => {
       // NOTE: measured relative to a baseline taken here, since the cache pool is
       // process-wide and the storage tests above leave registrations behind. Sound only
       // while vitest runs this file's tests sequentially (its default); marking the file
       // `concurrent` would race these baselines — pass each arm its own SharedCachePool then.
       const before = defaultCachePool().stats().stores.length;
-      const node = new CadreNode(createConfig({ storage: { provider: () => ({}) as IRawStorage } }));
+      const node = new CadreNode(createConfig({ storage: { open: async () => cacheableStorage() } }));
 
-      controlOptions(node);
+      await controlOptions(node);
       expect(defaultCachePool().stats().stores.length).toBe(before + 1);
 
       await nodeCleanup(node);
@@ -377,41 +416,37 @@ describe('CadreNode control-network node options', () => {
       expect(defaultCachePool().stats().stores.length).toBe(before);
     });
 
-    it('re-resolves against a LIVE cache after cleanup, not the retired wrapper', async () => {
-      // A provider that returns a stable instance per scope (the web reference app,
-      // the integration harness) is the case that would otherwise regress: the memo in
-      // `wrapStorageWithCache` is keyed on that inner instance, so without the memo
-      // eviction `disposeStorageCache` performs, the second cycle would be handed the
-      // disposed wrapper back.
-      const calls: string[] = [];
-      const instance = {} as IRawStorage;
-      const config = createConfig({
-        storage: { provider: (scope) => { calls.push(scope); return instance; } }
-      });
+    it('re-opens against a LIVE cache after cleanup, not the retired one', async () => {
+      // An opener that returns a stable value per scope (the web reference app, the integration
+      // harness) is the case that would otherwise regress: `withReadCache` dedupes by store
+      // object here, so without `cleanup` releasing the lease the second cycle would be handed
+      // the retired cache back.
+      const { open, calls } = recordingOpen(cacheableStorage());
+      const config = createConfig({ storage: { open } });
       const node = new CadreNode(config);
 
-      const first = controlOptions(node).storage;
+      const first = (await controlOptions(node)).storage;
       await nodeCleanup(node);
-      const second = controlOptions(node).storage;
+      const second = (await controlOptions(node)).storage;
 
       const scope = controlStorageScope(config.controlNetwork.partyId);
       expect(calls).toEqual([scope, scope]);
-      expect(second).toBeInstanceOf(CachedRawStorage);
-      expect(second).not.toBe(first);
+      expect(second?.blocks).toBeInstanceOf(CachedRawStorage);
+      expect(second?.blocks).not.toBe(first?.blocks);
       await nodeCleanup(node);
     });
   });
 
   describe('node-class-derived options', () => {
-    it('a server maps to the core fret profile and enables Ring Zulu', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
+    it('a server maps to the core fret profile and enables Ring Zulu', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
 
       expect(options.fretProfile).toBe('core');
       expect(options.arachnode?.enableRingZulu).toBe(true);
     });
 
-    it('a device maps to the edge fret profile and disables Ring Zulu', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
+    it('a device maps to the edge fret profile and disables Ring Zulu', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
 
       expect(options.fretProfile).toBe('edge');
       expect(options.arachnode?.enableRingZulu).toBe(false);
@@ -422,43 +457,43 @@ describe('CadreNode control-network node options', () => {
     // exists to keep. The breach would be silent — `createControlNode` would throw on the missing
     // repo only at start() — so the mapping is pinned here, where every other option of the
     // control node is.
-    it('never builds the control node as a client, whatever strandCohortMember says', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server', roles: { strandCohortMember: false } })));
+    it('never builds the control node as a client, whatever strandCohortMember says', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'server', roles: { strandCohortMember: false } })));
 
       expect(options.servesBlocks).toBeUndefined();
     });
   });
 
   describe('relay', () => {
-    it('defaults to enabled for a server node', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
+    it('defaults to enabled for a server node', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
 
       expect(options.relay).toBe(true);
     });
 
-    it('defaults to disabled for a device', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
+    it('defaults to disabled for a device', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
 
       expect(options.relay).toBe(false);
     });
 
-    it('an explicit false overrides the server default (?? not ||)', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'server', network: { enableRelay: false } })));
+    it('an explicit false overrides the server default (?? not ||)', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'server', network: { enableRelay: false } })));
 
       expect(options.relay).toBe(false);
     });
 
-    it('an explicit true overrides the device default', () => {
-      const options = controlOptions(new CadreNode(createConfig({ nodeClass: 'device', network: { enableRelay: true } })));
+    it('an explicit true overrides the device default', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ nodeClass: 'device', network: { enableRelay: true } })));
 
       expect(options.relay).toBe(true);
     });
 
-    it('runs the server without libp2p\'s per-connection data/duration cap, and hands a disabled one no init', () => {
+    it('runs the server without libp2p\'s per-connection data/duration cap, and hands a disabled one no init', async () => {
       // libp2p's default init caps every relayed connection at 128 KiB or 2 min, which
       // cut off every sync forwarded through a party's own always-on machine (#19).
-      const on = controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
-      const off = controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
+      const on = await controlOptions(new CadreNode(createConfig({ nodeClass: 'server' })));
+      const off = await controlOptions(new CadreNode(createConfig({ nodeClass: 'device' })));
 
       expect(on.relayServerInit?.reservations?.applyDefaultLimit).toBe(false);
       expect(off).not.toHaveProperty('relayServerInit');
@@ -466,49 +501,49 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('network passthrough', () => {
-    it('always binds an ephemeral port (0) — a fixed port would collide with strand nodes in-process', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('always binds an ephemeral port (0) — a fixed port would collide with strand nodes in-process', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.port).toBe(0);
     });
 
-    it('builds the node without the configured bootstrapNodes — they are dialed after bring-up', () => {
+    it('builds the node without the configured bootstrapNodes — they are dialed after bring-up', async () => {
       const config = createConfig({ controlNetwork: { partyId: 'p', bootstrapNodes: ['/ip4/1.2.3.4/tcp/1/p2p/x'] } });
 
-      const options = controlOptions(new CadreNode(config));
+      const options = await controlOptions(new CadreNode(config));
 
       expect(options.bootstrapNodes).toEqual([]);
     });
 
-    it('passes bootstrapNodes as [], not undefined — createLibp2pNode requires the field', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('passes bootstrapNodes as [], not undefined — createLibp2pNode requires the field', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.bootstrapNodes).toEqual([]);
     });
 
-    it('forwards an empty listenAddrs array — a device that names no listener of its own', () => {
-      const options = controlOptions(new CadreNode(createConfig({ network: { listenAddrs: [] } })));
+    it('forwards an empty listenAddrs array — a device that names no listener of its own', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ network: { listenAddrs: [] } })));
 
       expect('listenAddrs' in options).toBe(true);
       expect(options.listenAddrs).toEqual([]);
     });
 
-    it('forwards a populated listenAddrs array', () => {
-      const options = controlOptions(new CadreNode(createConfig({ network: { listenAddrs: ['/ip4/0.0.0.0/tcp/0'] } })));
+    it('forwards a populated listenAddrs array', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ network: { listenAddrs: ['/ip4/0.0.0.0/tcp/0'] } })));
 
       expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0']);
     });
 
-    it('forwards a configured transports array', () => {
+    it('forwards a configured transports array', async () => {
       const transports = [{ fake: 'transport' }] as unknown as NonNullable<CadreNodeConfig['network']>['transports'];
-      const options = controlOptions(new CadreNode(createConfig({ network: { transports } })));
+      const options = await controlOptions(new CadreNode(createConfig({ network: { transports } })));
 
       expect(options.transports).toBe(transports);
     });
 
-    it('forwards a configured noiseCrypto', () => {
+    it('forwards a configured noiseCrypto', async () => {
       const noiseCrypto = { ...noisePureJsCrypto };
-      const options = controlOptions(new CadreNode(createConfig({ network: { noiseCrypto } })));
+      const options = await controlOptions(new CadreNode(createConfig({ network: { noiseCrypto } })));
 
       expect(options.noiseCrypto).toBe(noiseCrypto);
     });
@@ -521,17 +556,17 @@ describe('CadreNode control-network node options', () => {
      * one (see `DEFAULT_CONNECTION_MONITOR`). Its strand-node half is pinned in
      * `strand-instance-manager-network-addrs.spec.ts`.
      */
-    it('defaults connectionMonitor when unset, and lets a configured value replace it', () => {
-      expect(controlOptions(new CadreNode(createConfig())).connectionMonitor).toBe(DEFAULT_CONNECTION_MONITOR);
+    it('defaults connectionMonitor when unset, and lets a configured value replace it', async () => {
+      expect((await controlOptions(new CadreNode(createConfig()))).connectionMonitor).toBe(DEFAULT_CONNECTION_MONITOR);
 
       const connectionMonitor = { abortConnectionOnPingFailure: false };
-      const options = controlOptions(new CadreNode(createConfig({ network: { connectionMonitor } })));
+      const options = await controlOptions(new CadreNode(createConfig({ network: { connectionMonitor } })));
 
       expect(options.connectionMonitor).toBe(connectionMonitor);
     });
 
-    it('omits transports, noiseCrypto and listenAddrs (and still resolves relay) when network is entirely absent', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('omits transports, noiseCrypto and listenAddrs (and still resolves relay) when network is entirely absent', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect('transports' in options).toBe(false);
       expect('noiseCrypto' in options).toBe(false);
@@ -550,8 +585,8 @@ describe('CadreNode control-network node options', () => {
      * listener at all. `wsPort` is db-p2p's switch for adding `webSockets()`; its VALUE
      * is never bound (see `relay-addrs.ts`), which is why it is 0 rather than 4002.
      */
-    it('turns db-p2p\'s WebSocket transport on when a listen address names /ws', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('turns db-p2p\'s WebSocket transport on when a listen address names /ws', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws'] }
       })));
 
@@ -560,8 +595,8 @@ describe('CadreNode control-network node options', () => {
       expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']);
     });
 
-    it('leaves wsPort off when nothing names WebSocket', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('leaves wsPort off when nothing names WebSocket', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] }
       })));
 
@@ -573,17 +608,17 @@ describe('CadreNode control-network node options', () => {
      * transport packages into every `cadre-core` consumer including the browser and React
      * Native bundles. Refusing to start names the address; the old behaviour named nothing.
      */
-    it('refuses to build options for a listen address no default transport can bind', () => {
-      expect(() => controlOptions(new CadreNode(createConfig({
+    it('refuses to build options for a listen address no default transport can bind', async () => {
+      await expect(controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/udp/4001/quic-v1'] }
-      })))).toThrow(/needs @libp2p\/quic/);
+      })))).rejects.toThrow(/needs @libp2p\/quic/);
     });
 
     /** An embedder supplying its own factories owns transport policy — neither arm applies. */
-    it('neither derives nor refuses when network.transports is set', () => {
+    it('neither derives nor refuses when network.transports is set', async () => {
       const transports = [{ fake: 'transport' }] as unknown as NonNullable<CadreNodeConfig['network']>['transports'];
 
-      const options = controlOptions(new CadreNode(createConfig({
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { transports, listenAddrs: ['/ip4/0.0.0.0/tcp/4002/ws', '/ip4/0.0.0.0/udp/4001/quic-v1'] }
       })));
 
@@ -600,8 +635,8 @@ describe('CadreNode control-network node options', () => {
    * are easy to regress: empty means unset, and a typo fails at start.
    */
   describe('announceAddrs / appendAnnounceAddrs', () => {
-    it('forwards a configured announceAddrs — what the node advertises INSTEAD OF what it binds', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('forwards a configured announceAddrs — what the node advertises INSTEAD OF what it binds', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { announceAddrs: ['/dns4/mynode.example.com/tcp/4001'] }
       })));
 
@@ -609,8 +644,8 @@ describe('CadreNode control-network node options', () => {
       expect('appendAnnounceAddrs' in options).toBe(false);
     });
 
-    it('forwards a configured appendAnnounceAddrs — advertised IN ADDITION TO what it binds', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('forwards a configured appendAnnounceAddrs — advertised IN ADDITION TO what it binds', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { appendAnnounceAddrs: ['/dns4/mynode.example.com/tcp/4001'] }
       })));
 
@@ -624,8 +659,8 @@ describe('CadreNode control-network node options', () => {
      * given rather than merging or dropping one locally, so the operator's config and
      * the node's options stay the same document.
      */
-    it('forwards both verbatim when both are configured, leaving precedence to libp2p', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('forwards both verbatim when both are configured, leaving precedence to libp2p', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: {
           announceAddrs: ['/dns4/replaces.example.com/tcp/4001'],
           appendAnnounceAddrs: ['/dns4/ignored.example.com/tcp/4001']
@@ -643,8 +678,8 @@ describe('CadreNode control-network node options', () => {
      * anyway — so the key is dropped rather than forwarded, and cannot land as an
      * explicit empty announce set if that upstream semantic ever changes.
      */
-    it('drops an empty array rather than forwarding it as an explicit empty announce set', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('drops an empty array rather than forwarding it as an explicit empty announce set', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { announceAddrs: [], appendAnnounceAddrs: [] }
       })));
 
@@ -652,8 +687,8 @@ describe('CadreNode control-network node options', () => {
       expect('appendAnnounceAddrs' in options).toBe(false);
     });
 
-    it('omits both keys when network carries neither', () => {
-      const options = controlOptions(new CadreNode(createConfig({ network: { listenAddrs: [] } })));
+    it('omits both keys when network carries neither', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({ network: { listenAddrs: [] } })));
 
       expect('announceAddrs' in options).toBe(false);
       expect('appendAnnounceAddrs' in options).toBe(false);
@@ -667,16 +702,16 @@ describe('CadreNode control-network node options', () => {
      * peer-store update. `announce-addrs.ts` parses up front so the typo is a loud
      * startup failure instead, matching what `relayAddrs` already does.
      */
-    it('throws on a malformed entry, naming the config field and the offending value', () => {
+    it('throws on a malformed entry, naming the config field and the offending value', async () => {
       const node = new CadreNode(createConfig({ network: { announceAddrs: ['not-a-multiaddr'] } }));
 
-      expect(() => controlOptions(node)).toThrow(/network\.announceAddrs entry is not a valid multiaddr: not-a-multiaddr/);
+      await expect(controlOptions(node)).rejects.toThrow(/network\.announceAddrs entry is not a valid multiaddr: not-a-multiaddr/);
     });
 
-    it('validates appendAnnounceAddrs on the same terms', () => {
+    it('validates appendAnnounceAddrs on the same terms', async () => {
       const node = new CadreNode(createConfig({ network: { appendAnnounceAddrs: ['tcp/4001'] } }));
 
-      expect(() => controlOptions(node)).toThrow(/network\.appendAnnounceAddrs entry is not a valid multiaddr: tcp\/4001/);
+      await expect(controlOptions(node)).rejects.toThrow(/network\.appendAnnounceAddrs entry is not a valid multiaddr: tcp\/4001/);
     });
   });
 
@@ -698,16 +733,16 @@ describe('CadreNode control-network node options', () => {
      * `driveControlRelayReservation`), so this assertion is what keeps the ordering
      * from silently regressing.
      */
-    it('reaches listenAddrs as the bare /p2p-circuit search entry, so start() opens no connection', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('reaches listenAddrs as the bare /p2p-circuit search entry, so start() opens no connection', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], relayAddrs: [RELAY_ADDR] }
       })));
 
       expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', '/p2p-circuit']);
     });
 
-    it('contributes one search entry however many relays are named', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('contributes one search entry however many relays are named', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: [], relayAddrs: [RELAY_ADDR, `/ip4/9.9.9.9/tcp/4001/p2p/${RELAY_PEER_ID}`] }
       })));
 
@@ -720,18 +755,18 @@ describe('CadreNode control-network node options', () => {
      * listen set `buildControlNodeOptions` resolves. A tolerated start still needs
      * the bare search entry to land a later reservation on.
      */
-    it('still carries the bare /p2p-circuit search entry when requireRelay is false', () => {
-      const options = controlOptions(new CadreNode(createConfig({
+    it('still carries the bare /p2p-circuit search entry when requireRelay is false', async () => {
+      const options = await controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], relayAddrs: [RELAY_ADDR], requireRelay: false }
       })));
 
       expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', '/p2p-circuit']);
     });
 
-    it('still validates every entry at option-build time, even though the search entry discards them', () => {
+    it('still validates every entry at option-build time, even though the search entry discards them', async () => {
       const node = new CadreNode(createConfig({ network: { relayAddrs: ['/ip4/1.2.3.4/tcp/4001'] } }));
 
-      expect(() => controlOptions(node)).toThrow(/network\.relayAddrs entry names no relay peerId/);
+      await expect(controlOptions(node)).rejects.toThrow(/network\.relayAddrs entry names no relay peerId/);
     });
 
     it('becomes a delegate-announce target, so this node\'s strand nodes may reserve on it too', () => {
@@ -769,7 +804,7 @@ describe('CadreNode control-network node options', () => {
       const node = new CadreNode(createConfig());
       await resolveIdentity(node);
 
-      const options = controlOptions(node);
+      const options = await controlOptions(node);
 
       expect('privateKey' in options).toBe(false);
     });
@@ -779,7 +814,7 @@ describe('CadreNode control-network node options', () => {
       const node = new CadreNode(createConfig({ privateKey: key }));
       await resolveIdentity(node);
 
-      const options = controlOptions(node);
+      const options = await controlOptions(node);
 
       expect(options.privateKey).toBe(key);
     });
@@ -789,8 +824,8 @@ describe('CadreNode control-network node options', () => {
       await resolveIdentity(node);
       const identityKey = (node as unknown as { identityKey: unknown }).identityKey;
 
-      const first = controlOptions(node);
-      const second = controlOptions(node);
+      const first = await controlOptions(node);
+      const second = await controlOptions(node);
 
       expect(first.privateKey).toBe(identityKey);
       expect(second.privateKey).toBe(identityKey);
@@ -798,11 +833,11 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('object freshness', () => {
-    it('builds a fresh object on every call — equal scalar fields, distinct object identity', () => {
+    it('builds a fresh object on every call — equal scalar fields, distinct object identity', async () => {
       const node = new CadreNode(createConfig());
 
-      const first = controlOptions(node);
-      const second = controlOptions(node);
+      const first = await controlOptions(node);
+      const second = await controlOptions(node);
 
       expect(first).not.toBe(second);
       expect(first.clusterSize).toBe(second.clusterSize);
@@ -813,15 +848,15 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('connectionGater', () => {
-    it('is always present even when no caller gater is configured', () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+    it('is always present even when no caller gater is configured', async () => {
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.connectionGater).toBeDefined();
     });
 
-    it('composes a caller-supplied gater rather than passing it through untouched', () => {
+    it('composes a caller-supplied gater rather than passing it through untouched', async () => {
       const callerGater: ConnectionGater = { denyDialMultiaddr: () => false };
-      const options = controlOptions(new CadreNode(createConfig({ network: { connectionGater: callerGater } })));
+      const options = await controlOptions(new CadreNode(createConfig({ network: { connectionGater: callerGater } })));
 
       expect(options.connectionGater).toBeDefined();
       expect(options.connectionGater).not.toBe(callerGater);
@@ -830,7 +865,7 @@ describe('CadreNode control-network node options', () => {
     it('honors a caller-supplied non-inbound hook through the composed gater', async () => {
       let called = false;
       const callerGater: ConnectionGater = { denyDialMultiaddr: () => { called = true; return true; } };
-      const options = controlOptions(new CadreNode(createConfig({ network: { connectionGater: callerGater } })));
+      const options = await controlOptions(new CadreNode(createConfig({ network: { connectionGater: callerGater } })));
 
       const denied = await options.connectionGater?.denyDialMultiaddr?.(
         {} as Parameters<NonNullable<ConnectionGater['denyDialMultiaddr']>>[0]
@@ -843,7 +878,7 @@ describe('CadreNode control-network node options', () => {
 
   describe('authorizeInboundStream', () => {
     it('is present and bound to this node — admits on a not-yet-started node', async () => {
-      const options = controlOptions(new CadreNode(createConfig()));
+      const options = await controlOptions(new CadreNode(createConfig()));
 
       expect(options.authorizeInboundStream).toBeInstanceOf(Function);
       // admitControlPeerUnconditionally's "not running / no control DB" baseline

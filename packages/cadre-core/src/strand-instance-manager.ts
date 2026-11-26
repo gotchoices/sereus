@@ -1,8 +1,9 @@
 import debug from 'debug';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { ICohortReachability } from '@optimystic/db-core';
-import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache, disposeStorageCache, checkAppSchema, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
+import { createLibp2pNode } from '@optimystic/db-p2p';
+import { checkAppSchema, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
+import { cachedNodeStorage, releaseReadCacheLease, type CachedNodeStorage } from './node-storage-cache.js';
 import { StrandDatabase, type StrandDatabaseOffline } from './strand-database.js';
 import type { StrandCommitDurability, StrandCommitHeld } from './strand-commit-durability.js';
 import type { StrandOfflineConfig, StrandOfflineListeners, StrandOfflineMode } from './strand-offline.js';
@@ -41,7 +42,6 @@ import type {
   LatencyHint,
   SAppConfig,
   SAppInfo,
-  RawStorageProvider,
   Libp2pNodeWithRepo
 } from './types.js';
 import { DEFAULT_CONNECTION_MONITOR, resolveStrandClusterSize, strandClusterPolicy } from './types.js';
@@ -449,66 +449,29 @@ type RuntimeTransition =
   | { kind: 'quiesce'; operation: Promise<void> };
 
 /**
- * Get the isolated storage path for a specific strand.
+ * Open one strand's storage and lease a read cache over its blocks.
  *
- * @deprecated This helper is Node-only and throws in React Native (it assumes a
- * filesystem layout). Use a storage provider factory function instead, which
- * receives the strandId and can create strand-specific storage paths using
- * platform-appropriate methods.
+ * Called only from {@link StrandInstanceManager.startStrand}, which owns the result for the
+ * instance's lifetime — see `strandStorages` — and which has already asserted the id is usable
+ * as a scope key. Do not move that assertion here: the id also becomes a libp2p protocol prefix,
+ * on a launch with no storage configured too, so it must be checked before anything else runs.
  *
- * @example
- * // Instead of using getStrandStoragePath, use a storage provider factory:
- * const storage = {
- *   provider: (strandId: string) => new FileRawStorage(`./data/strands/${strandId}`)
- * };
+ * Called ONCE per strand launch — `startStrand` keeps the result for the instance's lifetime —
+ * so the lease, and with it the warm cache, survives every runtime rebuild the instance goes
+ * through.
+ *
+ * @param storage - The node's storage configuration, or undefined when none was configured
+ * @param strandId - The strand whose scope to open
+ * @returns The storage to build the node with and this strand's cache lease, or undefined
  */
-export function getStrandStoragePath(basePath: string, strandId: string): string {
-  // Check if we're in a Node.js environment
-  if (typeof process === 'undefined' || !process.versions?.node) {
-    throw new Error(
-      'getStrandStoragePath is not available in React Native. ' +
-      'Use a storage provider factory function instead.'
-    );
-  }
-
-  // Sanitize strandId for filesystem safety (UUIDs should be safe, but just in case)
-  const safeId = strandId.replace(/[^a-zA-Z0-9-]/g, '_');
-
-  // Build the path with plain string joins rather than the Node `path` module.
-  // A static `require('path')` forces RN bundlers (e.g. Metro) to *resolve* the
-  // module at bundle time even though this Node-only helper throws above before
-  // ever reaching here — joining by hand keeps the module free of any Node
-  // built-in reference, so RN bundles need no `path` shim.
-  const trimmedBase = basePath.replace(/[\\/]+$/, '');
-  return `${trimmedBase}/strands/${safeId}`;
-}
-
-/**
- * Resolve a storage provider for a specific strand.
- * If the provider is a factory function, call it with the strandId.
- *
- * Called only from {@link StrandInstanceManager.startStrand}, which owns the result
- * for the instance's lifetime — see `strandStorages`, and which has already asserted
- * the id is usable as a scope key. Do not move that assertion here: this function
- * returns early when no provider is configured, and the id becomes a libp2p protocol
- * prefix on that path too.
- *
- * @param provider - Storage provider (instance or factory)
- * @param strandId - The strand ID to create storage for
- * @returns The resolved IRawStorage instance, or undefined if no provider
- */
-function resolveStrandStorage(
-  provider: RawStorageProvider | undefined,
+async function resolveStrandStorage(
+  storage: StorageConfig | undefined,
   strandId: string
-): IRawStorage | undefined {
-  if (!provider) {
+): Promise<CachedNodeStorage | undefined> {
+  if (!storage) {
     return undefined;
   }
-  const storage = typeof provider === 'function' ? provider(strandId) : provider;
-  // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts).
-  // Called ONCE per strand launch — `startStrand` keeps the result for the instance's
-  // lifetime — so the wrap survives every runtime rebuild the instance goes through.
-  return wrapStorageWithCache(storage, strandId);
+  return cachedNodeStorage(await storage.open(strandId), strandId);
 }
 
 /**
@@ -630,25 +593,39 @@ export class StrandInstanceManager {
    */
   private seedRemovalsAnnounced: Map<string, Set<string>> = new Map();
   /**
-   * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
-   * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
+   * The storage per strand id — the instance's OWN, opened once in `startStrand` with a
+   * read cache leased over its blocks, and held until `stopStrand` releases that lease.
    * Private for the same reason `backfills` is: runtime plumbing, not part of the
    * public {@link StrandInstance}.
    *
    * Deliberately NOT touched by `releaseRuntime`: that is what lets a quiesce →
-   * resume cycle rebuild the libp2p node over the SAME store, keeping its
-   * write-through cache warm (and, on an in-memory backend, keeping the strand's
+   * resume cycle rebuild the libp2p node over the SAME storage, keeping its
+   * read cache warm (and, on an in-memory backend, keeping the strand's
    * blocks at all). An entry exists iff `instances` does AND the launch config
-   * supplied a storage provider.
+   * configured storage.
    *
-   * NOTE: a hibernating strand therefore keeps its store — and its share of the
+   * NOTE: a hibernating strand therefore keeps its storage handle — and its share of the
    * process-wide cache pool — resident for as long as the instance is tracked. That
    * is the point (a warm wake), and the pool evicts under pressure, so the cost is
    * one map entry per hibernating strand today. If a device ever hibernates strands
-   * by the hundred, revisit: dropping the store at quiesce and paying for a cold
+   * by the hundred, revisit: dropping the storage at quiesce and paying for a cold
    * wake becomes the better trade.
    */
-  private strandStorages: Map<string, IRawStorage> = new Map();
+  private strandStorages: Map<string, CachedNodeStorage> = new Map();
+  /**
+   * The first {@link startStrand} in flight per strand id, present from before its storage is
+   * opened until its instance is recorded and its runtime built (or its launch has failed).
+   *
+   * Needed because opening a scope's storage is asynchronous: without this, two concurrent
+   * `addStrand` calls for one strand would both pass the `instances` check, both open the scope,
+   * and the second would overwrite the first's record — leaving a built runtime that nothing can
+   * stop. A second caller joins the launch in flight instead, which is what the tracked-instance
+   * early return already does once the record exists.
+   *
+   * Not {@link runtimeBuilds}, which starts only once the instance IS recorded, and not
+   * {@link transitions}, which is about a tracked instance's quiesce/resume.
+   */
+  private launches: Map<string, Promise<StrandInstance>> = new Map();
   /**
    * The runtime build in flight per strand id (`buildStrandRuntime`, from `startStrand` or
    * `resumeStrand`, or a deferred join's database retry), present until it settles. The
@@ -740,62 +717,92 @@ export class StrandInstanceManager {
    * path, from CadreNode's `strand:error` event), not from an error record left
    * behind in `instances`.
    *
-   * The strand's raw storage is resolved HERE, once, and held for the instance's
+   * The strand's storage is opened HERE, once, and held for the instance's
    * lifetime (see `strandStorages`) — `buildStrandRuntime` only reads it, so a
-   * hibernation wake never re-enters the embedder's provider.
+   * hibernation wake never re-enters the embedder's opener.
    */
   async startStrand(config: StartStrandConfig): Promise<StrandInstance> {
-    const { strandRow, sAppConfig } = config;
-    const strandId = strandRow.Id;
+    const strandId = config.strandRow.Id;
 
     if (this.stopping) {
       throw new Error('StrandInstanceManager is stopping');
     }
 
-    if (this.instances.has(strandId)) {
-      // Callers resolve founder-ness BEFORE reaching here (CadreNode.launchStrand) and
-      // honor a founder request on a tracked instance via foundExistingStrand — so a
-      // founder flag arriving at this early return against a non-founder retained
-      // config is a dropped bootstrap, and must never again be silent.
-      if (config.founder === true && this.launchConfigs.get(strandId)?.founder !== true) {
-        log('startStrand: strand %s is already running but was NOT launched as founder — ' +
-          'this early return DROPS the founder request; use foundExistingStrand', strandId);
-      }
+    const tracked = this.instances.get(strandId);
+    if (tracked) {
+      this.warnIfFounderRequestDropped(config, strandId);
       log('Strand %s already running', strandId);
-      return this.instances.get(strandId)!;
+      return tracked;
     }
+
+    // A launch of this strand that has not finished recording its instance yet. Opening a
+    // scope's storage is asynchronous, so there IS an await between the check above and the
+    // `instances.set` below, and two concurrent `addStrand` calls for one strand would
+    // otherwise each build a whole runtime and the second would overwrite the first's record.
+    // Joining the launch in flight is the same answer the early return above gives.
+    const inFlight = this.launches.get(strandId);
+    if (inFlight) {
+      this.warnIfFounderRequestDropped(config, strandId);
+      log('Strand %s is already being launched', strandId);
+      return await inFlight;
+    }
+
+    const launch = this.launchStrandInstance(config);
+    this.launches.set(strandId, launch);
+    try {
+      return await launch;
+    } finally {
+      if (this.launches.get(strandId) === launch) {
+        this.launches.delete(strandId);
+      }
+    }
+  }
+
+  /**
+   * Callers resolve founder-ness BEFORE reaching {@link startStrand} (CadreNode.launchStrand) and
+   * honor a founder request on a tracked instance via `foundExistingStrand` — so a founder flag
+   * arriving at one of that method's early returns against a non-founder retained config is a
+   * dropped bootstrap, and must never again be silent.
+   */
+  private warnIfFounderRequestDropped(config: StartStrandConfig, strandId: string): void {
+    if (config.founder === true && this.launchConfigs.get(strandId)?.founder !== true) {
+      log('startStrand: strand %s is already running but was NOT launched as founder — ' +
+        'this early return DROPS the founder request; use foundExistingStrand', strandId);
+    }
+  }
+
+  /** The body of a first {@link startStrand} for a strand: open its storage, record it, build it. */
+  private async launchStrandInstance(config: StartStrandConfig): Promise<StrandInstance> {
+    const { strandRow, sAppConfig } = config;
+    const strandId = strandRow.Id;
 
     log('Starting strand instance: %s (%s)', strandId, describeSApp(sAppConfig));
     const tTotal = performance.now();
 
-    // The id becomes two names below: the storage scope key the embedder's provider
+    // The id becomes two names below: the storage scope key the embedder's opener
     // turns into a directory or database name, and `networkName` in buildStrandRuntime,
     // from which the libp2p protocol prefix `/optimystic/strand-<id>` is built. A
     // replicated strand row carries whatever id the founding node wrote, so neither is
-    // safe unchecked. Asserted HERE rather than in `resolveStrandStorage` because that
-    // function returns early when no provider is configured — a node with no storage
-    // still reaches buildStrandRuntime and still mints the protocol prefix.
+    // safe unchecked. Asserted HERE, BEFORE the open below, rather than in
+    // `resolveStrandStorage`: that function returns early when no storage is configured —
+    // a node with no storage still reaches buildStrandRuntime and still mints the protocol
+    // prefix — so `InvalidStrandIdError` must precede the open on every path.
     assertStrandScopeKey(strandId);
 
     const sAppInfo = sAppConfig ? verifiedSAppInfo(strandId, sAppConfig, config.requireSignedSchemas) : undefined;
 
-    // Resolve this strand's storage ONCE, before anything is recorded. If a factory
-    // function is provided, it is called with the strandId to create strand-specific
-    // storage (e.g. strand-isolated directories). A provider that throws therefore
-    // fails the launch alongside the schema-signature check, leaving nothing tracked.
+    // Open this strand's storage ONCE, before anything is recorded, so an opener that
+    // throws or rejects fails the launch alongside the schema-signature check, leaving
+    // nothing tracked.
     //
-    // Never on a client (`roles.strandCohortMember: false`, built so in `buildStrandRuntime`):
-    // it stores no blocks, and the provider call itself has a side effect — a per-strand
-    // database on a phone, a per-strand directory on a node — so it is not made. Nothing is
-    // recorded in `strandStorages`, and every reader of that map (the join catch-up, the
-    // first-join test, the storage dispose) already handles the absent store.
-    const strandStorage = config.roles.strandCohortMember
-      ? resolveStrandStorage(config.storage?.provider, strandId)
-      : undefined;
+    // For EVERY role, a client included: a client serves no blocks, but it keeps its own
+    // blob records, blob pieces, owed-blob ledger and clock high-water mark, and its pieces
+    // may be the only copy of a blob its own host put. `blocks` is required on both roles,
+    // so one value serves either, and the unused block store costs nothing because every
+    // backend's constructor is lazy.
+    const strandStorage = await resolveStrandStorage(config.storage, strandId);
     if (strandStorage) {
-      log('Strand %s using provided storage provider', strandId);
-    } else if (!config.roles.strandCohortMember) {
-      log('Strand %s runs as a client: no store is resolved, its blocks live on the serving machines', strandId);
+      log('Strand %s using the configured storage', strandId);
     }
 
     // Determine latency hint: sApp config > default
@@ -835,8 +842,8 @@ export class StrandInstanceManager {
       this.seedRemovalsAnnounced.delete(strandId);
       // The cleanup above remembered the half-built database's queue; an untracked strand keeps none.
       this.closedQueues.delete(strandId);
-      // The store this launch resolved goes with it: nothing owns it any more, and a
-      // retained cache wrapper would be handed back (already retired) on a retry.
+      // The storage this launch opened goes with it: nothing owns it any more, and a
+      // retained lease would keep the cache claimed for a scope that no longer runs.
       await this.disposeStrandStorage(strandId);
       throw error;
     }
@@ -879,7 +886,8 @@ export class StrandInstanceManager {
    * privateKey, sApp config) from `config`, so the caller controls the
    * cohort-derived values. Storage is the
    * one input it does NOT re-read from `config`: that belongs to the instance and
-   * comes from `strandStorages`.
+   * comes from `strandStorages`, so a rebuild reaches the same location through the
+   * same leased cache and never re-enters the embedder's opener.
    *
    * A database that cannot be built because no machine that can answer for the strand's blocks
    * was reachable does not fail the build: the runtime comes up `'syncing'` without it and the
@@ -897,16 +905,18 @@ export class StrandInstanceManager {
     // Whether this strand node stores and signs the strand's blocks, or is a CLIENT that reads
     // and writes through the machines that do (`NodeRoles.strandCohortMember`). The one place
     // the role is turned into a node: everything below that differs on a client follows from
-    // this binding, and `startStrand` resolved no store for one, so `strandStorage` is undefined
-    // there and `backfillArms` is false with it.
+    // this binding. A client is handed storage like any other role — it keeps its own blob
+    // records and pieces — so this flag, not the presence of a store, is what the options below
+    // and `backfillArms` read.
     const servesBlocks = config.roles.strandCohortMember;
-    // The store the instance OWNS (resolved once in `startStrand`), not a fresh
-    // resolution: a rebuild must reach the same backend through the same warm cache.
+    // The storage the instance OWNS (opened once in `startStrand`), not a fresh open:
+    // a rebuild must reach the same location through the same warm cache.
     const strandStorage = this.strandStorages.get(strandId);
     // Whether this runtime arms the peer-join block catch-up (below, after the database
     // phase). Decided once because the node options read it too: they turn Optimystic's
-    // rebalance reaction off exactly where the catch-up runs.
-    const backfillArms = strandStorage !== undefined && config.backfill?.enabled !== false;
+    // rebalance reaction off exactly where the catch-up runs. Off on a client, which holds no
+    // blocks to push — and off with no storage at all, since the catch-up reads the store.
+    const backfillArms = servesBlocks && strandStorage !== undefined && config.backfill?.enabled !== false;
 
     // db-p2p namespaces every one of the node's protocol ids by network name
     // (`/optimystic/<networkName>/...`), so anything dialing this node's own
@@ -1034,11 +1044,20 @@ export class StrandInstanceManager {
         // classifies it from its identify list as not serving and leaves it out of every cohort,
         // its own view of itself included; its reads and writes go to a coordinator among the
         // strand's serving machines (`../optimystic/docs/internals.md` → "Client nodes"). The
-        // serving-only options Optimystic would ignore on a client stay off it below: `storage`
-        // is undefined here on a client (`startStrand`), `arachnode` is behind this flag, and
-        // `rebalance` is behind `backfillArms`, which the absent store already made false.
+        // serving-only options Optimystic would ignore on a client stay off it below:
+        // `arachnode` is behind this flag, and `rebalance` is behind `backfillArms`, which
+        // `servesBlocks` already made false. `storage` is NOT one of them — a client reads its
+        // `kv` and `pieces`, and leaves the `blocks` beside them untouched.
         servesBlocks,
-        storage: strandStorage,
+        // Absent when the embedder configured no storage, so Optimystic's own in-memory default
+        // applies AND it still logs the `node-wiring` warning naming what a restart then loses.
+        // Passing `memoryNodeStorage()` here would suppress that warning.
+        ...(strandStorage && { storage: strandStorage.storage }),
+        // What the operator gave this network, unchanged — the same figure the control node
+        // gets, not a share of it (see `StorageConfig.allotmentBytes`, and the `NOTE:` at
+        // `cadre-node.ts`'s own `storageAllotment` for what a machine can then hold).
+        ...(config.storage?.allotmentBytes !== undefined
+          && { storageAllotment: { bytes: config.storage.allotmentBytes } }),
         fretProfile: config.roles.overlayTier,
         relay: relayServer.enabled,
         // NOTE: unlike the control node, a strand node has no unauthorized-reservation budget,
@@ -1236,8 +1255,8 @@ export class StrandInstanceManager {
       // peer-join-backfill.ts for the strand-side argument (and why the control
       // network, which DOES gate, is different).
       //
-      // Never on a client: it holds no blocks to push, and `startStrand` resolved it no store,
-      // which is what `backfillArms` reads.
+      // Never on a client: it serves no blocks, so it has none to push — which is what
+      // `backfillArms` reads.
       //
       // NOTE: cost is one PeerJoinBackfill object + one `peer:identify` listener
       // per running strand — linear in strand count, negligible at the handful a
@@ -1249,7 +1268,10 @@ export class StrandInstanceManager {
             label: strandId,
             libp2p: node,
             peerNetwork: node.keyNetwork,
-            storage: strandStorage,
+            // The blocks, read through the same leased cache the node reads through, so the
+            // catch-up's scan of the store is not a second uncached pass over it.
+            // Non-null: `backfillArms` is false without a store.
+            storage: strandStorage!.storage.blocks,
             // The same prefix the receiver registered its block-transfer handler
             // under — derived from networkName above, never re-spelled here.
             protocolPrefix,
@@ -1373,6 +1395,9 @@ export class StrandInstanceManager {
     // never empty by then. A first join listens from here, so a member's push landing while the
     // database initializes is heard (initialize's own catalog fetch raises no change event). A
     // node with no change feed could not hear that push, so it probes at once as before.
+    // `storageRepo !== undefined` is also what keeps this off a client: a client's node builds
+    // no storage repo, so `strandStoreEmpty` is never reached on one even now that a client has
+    // storage of its own.
     const firstJoin = config.founder !== true && storageRepo !== undefined && await this.strandStoreEmpty(strandId);
     if (firstJoin) {
       gate.listen();
@@ -1527,19 +1552,23 @@ export class StrandInstanceManager {
   }
 
   /**
-   * Whether this strand's raw store holds no block. False for a store that cannot list its
+   * Whether this strand's block store holds no block. False for a store that cannot list its
    * blocks, or whose listing fails, so such a launch probes at once.
+   *
+   * Unreachable on a client, even though a client now has storage: its only caller gates on
+   * `storageRepo !== undefined`, and a client's node builds none (verified by inspection at
+   * the `firstJoin` binding).
    */
   private async strandStoreEmpty(strandId: string): Promise<boolean> {
-    const storage = this.strandStorages.get(strandId);
-    if (!storage?.listBlockIds) return false;
+    const blocks = this.strandStorages.get(strandId)?.storage.blocks;
+    if (!blocks?.listBlockIds) return false;
     try {
-      for await (const _blockId of storage.listBlockIds()) {
+      for await (const _blockId of blocks.listBlockIds()) {
         return false;
       }
       return true;
     } catch (error) {
-      log('Strand %s: listing the raw store failed; probing first sync at once: %o', strandId, error);
+      log('Strand %s: listing the block store failed; probing first sync at once: %o', strandId, error);
       return false;
     }
   }
@@ -1680,8 +1709,9 @@ export class StrandInstanceManager {
    * absent — so it doubles as rollback for a failed `buildStrandRuntime`. Shared
    * by `quiesceStrand`, `stopStrand`, and that rollback path.
    *
-   * Leaves `strandStorages` untouched by design — the store outlives the runtime it
-   * was built into, which is what makes a resume warm. Only `stopStrand` disposes it.
+   * Leaves `strandStorages` untouched by design — the storage and its cache lease outlive the
+   * runtime they were built into, which is what makes a resume warm. Only `stopStrand` releases
+   * the lease.
    */
   private async releaseRuntime(instance: StrandInstance): Promise<void> {
     // Relay supervisors FIRST of all — before anything below is torn down — so no
@@ -1808,15 +1838,14 @@ export class StrandInstanceManager {
   }
 
   /**
-   * Drop the strand's owned store and release this strand's claim on its cache. The
-   * wrapper counts holders, so the cache is emptied and unregistered from the shared
-   * pool only if no other scope still holds it. Called only where the strand's whole
-   * lifetime ends (`stopStrand`, and the failed-launch rollback) — never on a quiesce.
+   * Forget the strand's storage entry and release this strand's lease on its block cache. The
+   * cache is emptied and unregistered from the shared pool only if no other scope still holds a
+   * lease over that location. Called only where the strand's whole lifetime ends (`stopStrand`,
+   * and the failed-launch rollback) — never on a quiesce, which is what keeps a wake warm.
    *
-   * A dispose failure is logged, not thrown: the store is already unreferenced here,
-   * and failing the stop over a cache-bookkeeping error would leave the caller unable
-   * to tear the strand down. `disposeStorageCache` no-ops for an unwrapped store
-   * (e.g. `MemoryRawStorage`), so no instanceof test is needed.
+   * Nothing is CLOSED here: `StorageConfig.open` returns a `NodeStorage`, whose handle stays the
+   * embedder's to close once the node has stopped (`types.ts`). Dropping the entry is what lets
+   * a relaunch of the same strand open the scope again.
    */
   private async disposeStrandStorage(strandId: string): Promise<void> {
     const storage = this.strandStorages.get(strandId);
@@ -1824,11 +1853,7 @@ export class StrandInstanceManager {
       return;
     }
     this.strandStorages.delete(strandId);
-    try {
-      await disposeStorageCache(storage);
-    } catch (error) {
-      log('Failed to dispose storage cache for strand %s: %o', strandId, error);
-    }
+    await releaseReadCacheLease(storage.lease, `strand ${strandId}`, log);
   }
 
   /**

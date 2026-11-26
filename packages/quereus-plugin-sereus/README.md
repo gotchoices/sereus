@@ -211,7 +211,7 @@ Set `DEBUG=sereus:plugin:*` for the connection's log.
 
 ## Other exports
 
-`MIN_CLUSTER_SIZE`, `DEFAULT_STRAND_CLUSTER_SIZE`, `CONTROL_REPLICATION_BREADTH`, `COHORT_READ_DEADLINE_MS`, the cluster policies and their builders ([`src/cluster-size.ts`](src/cluster-size.ts)), and `wrapStorageWithCache` / `disposeStorageCache` ([`src/cached-storage.ts`](src/cached-storage.ts)) are exported for cadre-core, which builds the control and strand nodes with them. An app has no reason to call them.
+`MIN_CLUSTER_SIZE`, `DEFAULT_STRAND_CLUSTER_SIZE`, `CONTROL_REPLICATION_BREADTH`, `COHORT_READ_DEADLINE_MS`, and the cluster policies and their builders ([`src/cluster-size.ts`](src/cluster-size.ts)) are exported for cadre-core, which builds the control and strand nodes with them. An app has no reason to call them.
 
 ## Development
 

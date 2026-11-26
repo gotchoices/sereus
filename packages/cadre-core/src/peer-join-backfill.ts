@@ -41,12 +41,13 @@ import type { Libp2pNodeWithRepo } from './types.js';
 // If Optimystic ever grows a cohort-join catch-up of its own, delete this module rather
 // than running two.
 //
-// NOTE: strand nodes pass db-p2p no `kvStore`, so Optimystic's under-replication ledger (the
-// copies a node owes peers) dies at every restart. This module's push on connect is what
-// delivers a write a machine made alone after it restarts (`joiner-first-commit-over-slow-relay`,
-// restart arm): the peer did not sign that commit, so the block is still offered to it. If this
-// module is narrowed (the cohort filter above) or deleted, give strand nodes a persistent
-// kvStore first.
+// NOTE: strand nodes now hand db-p2p a durable key-value store, so Optimystic's
+// under-replication ledger (the copies a node owes peers) survives a restart. This module's push
+// on connect is still what delivers a write a machine made ALONE after it restarts
+// (`joiner-first-commit-over-slow-relay`, restart arm): nothing was owed, because no peer was
+// there to owe it to — the peer did not sign that commit, so the block is still offered to it on
+// connect. That is the case the ledger cannot cover, and it is why this module exists
+// independently of it.
 //
 // Membership — the one place the two networks differ, expressed as the optional
 // `authorizePeer` dep:

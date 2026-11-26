@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { createOwnerKey } from '../src/owner-key-store.js';
@@ -24,8 +24,8 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * history and ruled-out hypotheses in
  * `tickets/complete/optimystic-block-read-amplification-on-control-start.md` and
  * `tickets/complete/optimystic-schema-catalog-reread-per-write-blows-storage-budgets.md`.
- * The resolution was upstream's write-through raw-storage cache, which cadre-core
- * wires over every embedder-supplied storage (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`): what reaches
+ * The resolution was upstream's write-through raw-storage cache, which cadre-core leases over
+ * every scope's block store (`withReadCache`, at `node-storage-cache.ts`): what reaches
  * the backend now is dominated by the genuine writes plus one cold read per block.
  * **This spec is the guard that keeps that so** — a broken or unwired cache roughly
  * doubles the cold count (88 against 45 on 2026-09-14, the difference almost all
@@ -35,13 +35,14 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * other signal is wall clock, which stays green on an idle machine while the
  * device-facing behaviour gets worse.
  *
- * Deliberately backed by `MemoryRawStorage` rather than files — the COUNT is what is
+ * Deliberately backed by in-memory storage rather than files — the COUNT is what is
  * asserted, so an in-memory backend keeps the spec fast and free of filesystem noise
  * while issuing exactly the same operations a file backend would. It did when the
  * pre-cache figure was cross-checked: the 1541 of 2026-08-12 was identical over
  * `FileRawStorage`. (The counter sits UNDER cadre-core's cache — `CountingRawStorage`
  * is not a `MemoryRawStorage`, so the wrap applies — which is the point: it counts
- * what would reach the device's disk.)
+ * what would reach the device's disk. It fronts the BLOCKS only, which is the one store
+ * the cache is leased over; the node's key-value records and blob pieces are not counted.)
  *
  * The counts reproduce exactly — three consecutive runs gave byte-identical
  * per-method breakdowns — which is what makes a budget this close to the measurement
@@ -92,7 +93,7 @@ const within = scopedWithin('storage-op-budget');
  *
  * The date the COLD and WARM figures were last taken.
  */
-const MEASURED_ON = '2026-11-03';
+const MEASURED_ON = '2026-11-25';
 /**
  * The `../optimystic` commit these figures were last measured against. The WARM figure fell
  * at optimystic 03ffadc4 on 2026-09-17 (44 ops over 22 blocks to 13 over 3) when that repo
@@ -103,9 +104,16 @@ const MEASURED_ON = '2026-11-03';
  * tables: WARM unchanged, COLD grew by their blocks alone (see {@link COLD}). Re-measured at
  * 0e70f551 (Optimystic 1.17.0) on 2026-10-21: WARM unchanged, COLD grew by `getMetadata` blocks
  * alone. Re-measured at fe7069f0 on 2026-11-03 for control schema version 4: WARM unchanged, COLD
- * grew by the blocks of its two tables and one stamp tree alone.
+ * grew by the blocks of its two tables and one stamp tree alone. Re-measured at a7b1595e
+ * (Optimystic 1.30.0) on 2026-11-25: COLD grew by 3 and WARM by 1, GENESIS not at all, and every
+ * operation is accounted for. One of each is the storage account's single start-up
+ * `getApproximateBytesUsed` scan, which is 1.30.0's — a node now measures itself against an
+ * allotment. COLD's other two are 1.28.0's commit-proofs store (`f53e7990`, 2026-11-17: one
+ * `getCommitProof` and one `saveCommitProof` per commit message, and cold issues one commit),
+ * which these figures had never been re-measured for; `strand-solo-write-budget.spec.ts` picked
+ * the same change up at `e81f33e3`. WARM commits nothing, so it sees only the scan.
  */
-const BASELINE_UPSTREAM = 'optimystic fe7069f0';
+const BASELINE_UPSTREAM = 'optimystic a7b1595e';
 /**
  * The substrate the GENESIS figures were measured against — an npm release rather than an
  * `../optimystic` commit like {@link BASELINE_UPSTREAM}, because on the day they were taken the
@@ -138,7 +146,9 @@ const GENESIS_UPSTREAM = 'npm optimystic 1.29.1';
  * blocks, from 2026-10-20 01:04 at the latest, so before Optimystic 1.17.0's code; the
  * schema changes since 2026-10-06, `owner-grant-tables`' `OwnerGrant` and `OwnerGrantUsage`
  * among them, were not measured one at a time; nothing else moved), 63 over 38 with the 19-table
- * schema at optimystic fe7069f0 (2026-11-03; three more `getMetadata` blocks; nothing else moved). The same batched start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a
+ * schema at optimystic fe7069f0 (2026-11-03; three more `getMetadata` blocks; nothing else moved),
+ * 66 over the same 38 at {@link BASELINE_UPSTREAM} (2026-11-25; see that constant for what the
+ * three are). The same batched start measured 88 uncached on 2026-09-14 (57 of them `getMetadata`), so a
  * run near 90 that is mostly `getMetadata` means the cache has left the path.
  *
  * Observed at 65 over the same 38 blocks against {@link GENESIS_UPSTREAM} on 2026-11-23 — the run
@@ -148,7 +158,7 @@ const GENESIS_UPSTREAM = 'npm optimystic 1.29.1';
  * at its own substrate rather than restated against another.
  */
 const COLD: Budget = {
-	ops: 63, blocks: 38, opBudget: 73, blockBudget: 42,
+	ops: 66, blocks: 38, opBudget: 73, blockBudget: 42,
 	measuredOn: MEASURED_ON, upstream: BASELINE_UPSTREAM
 };
 /**
@@ -156,7 +166,7 @@ const COLD: Budget = {
  * hydrates instead of the schema being applied. 13 operations over 3 blocks: a
  * cold CACHE over a warm STORE, reading the catalog's own blocks four ways each
  * (`getMetadata`, `listRevisions`, `getMaterializedBlock`, `listPendingTransactions`)
- * plus one `listBlockIds` fill. It was 44 over 22 blocks until {@link BASELINE_UPSTREAM}
+ * plus one `listBlockIds` fill and the storage account's one `getApproximateBytesUsed` scan. It was 44 over 22 blocks until {@link BASELINE_UPSTREAM}
  * — one read per block for every table — and the drop is that repo no longer touching a
  * table's block during the hydrate; the first read of each table pays for it instead, which
  * this phase does not perform. NOTE: the per-table→per-block mapping is NOT one-to-one —
@@ -178,11 +188,12 @@ const COLD: Budget = {
  * optimystic 03ffadc4 (2026-09-17), still 13 with the 10-table schema at optimystic
  * 7f5e8a90 (2026-09-28), still 13 with the 11-table schema at optimystic 461a01bc
  * (2026-10-01), still 13 with the 17-table schema at optimystic 0e70f551 (2026-10-21), still 13 with
- * the 19-table schema at {@link BASELINE_UPSTREAM} (2026-11-03). 13 is still a cold cache: the 3-op signature the
+ * the 19-table schema at optimystic fe7069f0 (2026-11-03), 14 at {@link BASELINE_UPSTREAM}
+ * (2026-11-25, the storage account's start-up scan). 14 is still a cold cache: the 3-op signature the
  * tripwire names is a SHARED storage instance, which reads the catalog once and nothing else.
  */
 const WARM: Budget = {
-	ops: 13, blocks: 3, opBudget: 17, blockBudget: 5,
+	ops: 14, blocks: 3, opBudget: 17, blockBudget: 5,
 	measuredOn: MEASURED_ON, upstream: BASELINE_UPSTREAM
 };
 /**
@@ -270,7 +281,7 @@ function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget)
 		`${phase} issued ${snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
 		+ 'Duration is operations × per-operation storage latency, whichever phase this is, so this is a real slowdown on a loaded disk or a phone. '
 		+ 'This fires FIRST when a control table is added too — check the distinct-block budget below before reading it as pure slowdown. '
-		+ 'A count about double the measurement, mostly repeated getMetadata reads, means the write-through cache (cached-storage.ts in @serfab/quereus-plugin-sereus) has left the path. '
+		+ 'A count about double the measurement, mostly repeated getMetadata reads, means the write-through cache (withReadCache, at node-storage-cache.ts) has left the path. '
 		+ `History in tickets/complete/optimystic-block-read-amplification-on-control-start.md. ${breakdown}`
 	).toBeLessThanOrEqual(budget.opBudget);
 
@@ -332,16 +343,16 @@ describe('control database start, raw-storage operation budget', () => {
 		// One BACKING store across both runs — the same warm-restart shape
 		// `control-database-solo.spec.ts` uses, so the second start enters the
 		// catalog-hydrate path rather than re-creating the schema. But each start gets
-		// its own CountingRawStorage IDENTITY over it: cadre-core memoizes its
-		// write-through cache per storage instance (`cached-storage.ts`), so reusing
-		// one instance would hand the "restarted" node the first start's warm cache
-		// and the warm figure would stop standing for a real device restart, where
-		// the process — and the cache — dies with it. A fresh identity means a cold
-		// cache over a warm store, which is what a device restart pays.
-		const inner = new MemoryRawStorage();
+		// its own CountingRawStorage IDENTITY over it: `withReadCache` dedupes by store
+		// object where no identity is reported, so reusing one instance would hand the
+		// "restarted" node the first start's warm cache and the warm figure would stop
+		// standing for a real device restart, where the process — and the cache — dies
+		// with it. A fresh identity means a cold cache over a warm store, which is what
+		// a device restart pays.
+		const inner = memoryNodeStorage();
 		const config = () => controlNodeConfig({
 			partyId, nodeClass: 'device', keyStore,
-			storage: new CountingRawStorage(inner, counter)
+			storage: async () => ({ ...inner, blocks: new CountingRawStorage(inner.blocks, counter) })
 		});
 
 		// --- Cold: first ever start, empty storage ---------------------------------

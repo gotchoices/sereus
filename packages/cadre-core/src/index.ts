@@ -222,7 +222,7 @@ export {
 // diagnostic for "whom could this strand node redial right now?".
 export { strandFretPeerAddrs, type FretAddrHost, type FretPeerAddrs } from './strand-fret-addrs.js';
 
-// Storage scope keys — what `CadreNodeConfig.storage.provider` is called with. A
+// Storage scope keys — what `CadreNodeConfig.storage.open` is called with. A
 // strand's key is its strand id; the control database's key carries the party id,
 // so two parties on one device never share a control store. Every key stays within
 // `[a-z0-9._-]` — lowercase, so distinct keys stay distinct on a case-insensitive
@@ -261,6 +261,11 @@ export {
 // What a rejected `addStrand` and `strand:error` carry when the app's schema can never apply to the
 // strand's tables, so an app need not depend on the plugin to recognise it.
 export { AppSchemaRefusedError, AppSchemaOutdatedError, appSchemaRefusalOf } from '@serfab/quereus-plugin-sereus';
+// How an app tells a write that failed because the strand's machines are FULL from one that failed
+// transiently (`docs/strands/writes.md`). Re-exported for the same reason as the schema refusal
+// above: the apps reach Sereus through this package and declare neither the SQL plugin nor
+// `@optimystic/db-core`, so without this they cannot name the error a failed write carries.
+export { cohortOutOfSpaceOf, type CohortOutOfSpaceError } from '@serfab/quereus-plugin-sereus';
 // What `StrandOfflineQueue.discard` throws, so an app need not depend on Optimystic to tell them apart.
 export { EntryNotDiscardableError, UnknownEntryError } from '@optimystic/db-core';
 
@@ -276,7 +281,6 @@ export {
   StrandInstanceManager,
   type StartStrandConfig,
   type ResumeStrandOverrides,
-  getStrandStoragePath,
   isAwaitingFirstSync,
   liveStrandStatus
 } from './strand-instance-manager.js';

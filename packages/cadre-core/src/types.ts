@@ -1,6 +1,6 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { CircuitRelayServerInit } from '@libp2p/circuit-relay-v2';
-import type { IRawStorage, Libp2pConnectionMonitorInit, Libp2pTransports, NoiseCryptoInterface } from '@optimystic/db-p2p';
+import type { Libp2pConnectionMonitorInit, Libp2pTransports, NodeStorage, NoiseCryptoInterface } from '@optimystic/db-p2p';
 import type { CollectionChangeListener, ICohortReachability, IKeyNetwork, IPeerNetwork, IRepo } from '@optimystic/db-core';
 import type { PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import type { StrandReactivityConfig } from './strand-reactivity.js';
@@ -158,84 +158,101 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
 };
 
 /**
- * Storage provider - either an `IRawStorage` instance or a factory function.
- * Factory functions are useful for creating per-scope storage instances.
- *
- * **The argument is an opaque scope key.** Use it directly as a file name, directory
- * name or database name: every key stays within `[a-z0-9._-]`, so no escaping is
- * needed and none should be assumed, and two different keys are two different names
- * even on a filesystem that ignores case (Windows, macOS). Do not parse it;
- * `controlStorageScope` / `isControlStorageScope` (`storage-scope.ts`) are the supported
- * way to mint and recognize the control key. The control key holds the charset by
- * lowercase hex encoding;
- * a strand's key — its strand id, which may have replicated in from another node in
- * the party — holds it because `StrandInstanceManager.startStrand` runs
- * `assertStrandScopeKey` on every launch and refuses a strand that fails it.
- *
- * **Called once per scope per runtime lifetime.** The scopes are the control database
- * (once per `CadreNode.start()`) and each strand id (once per `startStrand`).
- * Hibernation — `quiesceStrand` then `resumeStrand` — reuses the store already
- * resolved for that strand and does NOT re-enter this callback.
- *
- * **The control scope is party-specific.** It is `controlStorageScope(partyId)`, not a
- * fixed string, because the control database holds one party's own records — its
- * strands, owner keys, peers, invitations, revocations. Two parties on one device ask
- * for two different keys and MUST get two different stores, or a node started for one
- * party reads the other's rows as its own.
- *
- * It IS re-entered for a scope after that scope's runtime has stopped
- * (`stopStrand`, or a `stop()` then `start()` cycle on one `CadreNode`), so it must
- * be able to hand back a store over the same durable backend a second time. A
- * factory may mint a fresh object per call; it must not *need* to.
- *
- * cadre-core disposes only its own cache wrapper — it never closes the store you
- * returned. Closing the underlying handle stays the embedder's job.
- *
- * **The single-instance form shares data across scopes by construction** — one store
- * for every strand AND for every party's control database. An embedder that can serve
- * more than one party must use the factory form. One instance handed to every scope
- * also shares ONE cache wrapper (`wrapStorageWithCache` memoizes per inner instance),
- * which counts its holders: a scope stopping releases only its own claim, and the
- * wrapper is retired when the last scope releases it. The factory form is the better
- * default for the further reason that it partitions each strand's data, which
- * simplifies cleanup.
- */
-export type RawStorageProvider = IRawStorage | ((scope: string) => IRawStorage);
-
-/**
- * Storage configuration for a node that stores blocks
+ * Storage configuration for a node: how to open one scope's storage, and how much of this
+ * machine the operator gave each network.
  */
 export interface StorageConfig {
   /**
-   * Storage provider - either an IRawStorage instance or a factory function.
-   * See {@link RawStorageProvider} for how often cadre-core calls it, and for why
-   * the single-instance form cannot serve more than one party.
+   * Open all of one scope's storage — the block store, the key-value store and the blob piece
+   * store, as the one {@link NodeStorage} value Optimystic takes.
    *
-   * The `scope` a factory receives is an opaque key already safe as a path or
-   * database-name segment (always within `[a-z0-9._-]`), so each example below
-   * interpolates it directly.
+   * **The argument is an opaque scope key.** Use it directly as a file name, directory
+   * name or database name: every key stays within `[a-z0-9._-]`, so no escaping is
+   * needed and none should be assumed, and two different keys are two different names
+   * even on a filesystem that ignores case (Windows, macOS). Do not parse it;
+   * `controlStorageScope` / `isControlStorageScope` (`storage-scope.ts`) are the supported
+   * way to mint and recognize the control key. The control key holds the charset by
+   * lowercase hex encoding; a strand's key — its strand id, which may have replicated in
+   * from another node in the party — holds it because
+   * `StrandInstanceManager.startStrand` runs `assertStrandScopeKey` on every launch and
+   * refuses a strand that fails it.
    *
-   * For Node.js environments, use FileRawStorage from @optimystic/db-p2p-storage-fs:
+   * **Called once per scope per runtime lifetime.** The scopes are the control database
+   * (once per `CadreNode.start()`) and each strand id (once per `startStrand`), a CLIENT
+   * strand included — a client serves no blocks, but it keeps its own blob records, blob
+   * pieces, owed-blob ledger and clock high-water mark. Hibernation — `quiesceStrand` then
+   * `resumeStrand` — reuses the storage already opened for that strand and does NOT
+   * re-enter this callback.
+   *
+   * **The control scope is party-specific.** It is `controlStorageScope(partyId)`, not a
+   * fixed string, because the control database holds one party's own records — its
+   * strands, owner keys, peers, invitations, revocations. Two parties on one device ask
+   * for two different keys and MUST get two different stores, or a node started for one
+   * party reads the other's rows as its own.
+   *
+   * It IS re-entered for a scope after that scope's runtime has stopped
+   * (`stopStrand`, or a `stop()` then `start()` cycle on one `CadreNode`), so it must
+   * be able to hand back storage over the same durable location a second time, as the
+   * same object or a new one.
+   *
+   * **cadre-core closes nothing it is handed** — which is why this returns `NodeStorage`
+   * and not Optimystic's `OpenNodeStorage`: cadre-core cannot close what it cannot see a
+   * `close()` on. Keep the `OpenNodeStorage` your platform factory returned and close it
+   * yourself once the node has stopped (the CLI at process exit, the edge node in
+   * `EdgeNodeStorage.close()`). cadre-core releases only its own read-cache lease over
+   * the block store. A hibernated strand therefore keeps its storage handle, and a resume
+   * reuses it.
+   *
+   * There is no single-instance form. One `NodeStorage` shared by every scope would put one
+   * party's control database in another's store, `levelDbNodeStorage` refuses a second open
+   * over one handle outright, and an `OpenNodeStorage` carries a `close()` a shared instance
+   * would have closed once per scope. An embedder that genuinely wants sharing gets it from
+   * the platform factory instead — `fileNodeStorage` hands back one set of stores per
+   * directory, counted by holder.
+   *
+   * For Node.js, `fileNodeStorage` from `@optimystic/db-p2p-storage-fs`:
    * ```typescript
-   * import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
-   * storage: { provider: (scope) => new FileRawStorage(`./data/${scope}`) }
+   * import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
+   * storage: { open: async (scope) => fileNodeStorage(`./data/${scope}`) }
    * ```
    *
-   * For React Native, use the appropriate storage from @optimystic/db-p2p-storage-rn:
+   * For React Native, `levelDbNodeStorage` from `@optimystic/db-p2p-storage-rn` over an
+   * open LevelDB handle (see `openOptimysticRNDb` over `rn-leveldb`):
    * ```typescript
-   * import { LevelDBRawStorage } from '@optimystic/db-p2p-storage-rn';
-   * // `db` is an open LevelDB handle (see `openOptimysticRNDb` over `rn-leveldb`)
-   * storage: { provider: (scope) => new LevelDBRawStorage(openDb(`sereus-${scope}`)) }
+   * import { levelDbNodeStorage } from '@optimystic/db-p2p-storage-rn';
+   * storage: { open: async (scope) => levelDbNodeStorage(await openDb(`sereus-${scope}`)) }
    * ```
    *
-   * For in-memory storage (testing):
-   * ```typescript
-   * import { MemoryRawStorage } from '@optimystic/db-p2p';
-   * storage: { provider: () => new MemoryRawStorage() }
-   * ```
+   * For in-memory storage (testing), `memoryNodeStorage` from `@optimystic/db-p2p` —
+   * memoized per scope if a restart must read what the previous lifetime wrote.
    */
-  provider: RawStorageProvider;
-  quotaBytes?: number;
+  open(scope: string): Promise<NodeStorage>;
+  /**
+   * How many bytes of this machine the operator gave each network this node serves, passed to
+   * Optimystic unchanged as `storageAllotment.bytes` — to the control node and to every strand
+   * node alike, not divided between them.
+   *
+   * So with N strands running, a machine can hold up to (N+1) times this figure before any one
+   * node reports itself full: the number bounds ONE network's share of the machine, not the
+   * machine. On a Node host the file backend reports free space too, which each node measures
+   * against as well, so the disk still cannot be filled past its own size. It is not divided
+   * because a node's allotment is fixed when the node is constructed while the strand count
+   * changes as the node runs: any division would be stale for the nodes already built, or would
+   * force a node rebuild on every strand launch. See `docs/cadre/node.md` → "The storage
+   * allotment".
+   *
+   * What it changes today is each node's blob read-cache budget (the smallest of Optimystic's
+   * 256 MiB cap, an eighth of this figure, and what the node's other use leaves) and the refusal
+   * of writes above 0.95 of it. Optimystic's ring move-in, move-out and released-block sweep stay
+   * inert on a Sereus node, because every Sereus node turns the rebalance reaction off wherever
+   * its peer-join catch-up is armed.
+   *
+   * Absent means "as much as the backend reports free", which on a backend that reports none
+   * (SQLite, LevelDB, memory) means the node cannot tell how full it is and says so in one
+   * start-up warning. Anything but an integer above 0 throws at node construction: cadre-core
+   * passes the number through and validates nothing of it, so that refusal has one home.
+   */
+  allotmentBytes?: number;
 }
 
 /**
@@ -889,7 +906,15 @@ export interface CadreNodeConfig {
    */
   hostUnclaimedStrands?: boolean;
 
-  /** Storage configuration (only for a node that stores blocks) */
+  /**
+   * How this node opens each scope's storage, and the operator's per-network byte allotment.
+   *
+   * Every node takes storage, a client strand node included: a client serves no blocks, but it
+   * keeps its own blob records, blob pieces, owed-blob ledger and clock high-water mark. Absent
+   * altogether, each node Optimystic builds keeps all three in memory and says in a start-up
+   * warning what is then lost at a restart — cadre-core passes no `storage` at all in that case
+   * rather than an explicit in-memory value, so that warning is not suppressed.
+   */
   storage?: StorageConfig;
 
   /** Network configuration */

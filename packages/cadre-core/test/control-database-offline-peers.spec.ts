@@ -7,7 +7,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore, type KeyStore } from '../src/key-store.js';
 import { createOwnerKey, loadOwnerSigner } from '../src/owner-key-store.js';
@@ -17,6 +17,7 @@ import {
 	expectNotListening,
 	freshPartyId,
 	insertResolvableOfflinePeer,
+	memoryStorageProvider,
 	mintBlackholePeer as mintBlackholePeerOn,
 	short,
 	withinOp,
@@ -63,7 +64,7 @@ import { startSilentServer, type SilentServer } from './silent-server.js';
  *
  * `ensureOwnerKey` is the exception and keeps this bound anyway: founding the party is 36 durable
  * commits (NOTE on `ControlDatabase.commitEmptyControlCollections`), which is 2.0–2.9 s on
- * file-backed storage but 0.1–0.35 s over the `MemoryRawStorage` every node here uses. That is
+ * file-backed storage but 0.1–0.35 s over the in-memory storage every node here uses. That is
  * 40–150× inside this bound, where the file-backed
  * `control-database-solo-warm-start.spec.ts` was close enough to it to fail under outside CPU load
  * and needed its own `GENESIS_TIMEOUT_MS`. If this spec ever moves to file storage, it needs that
@@ -204,7 +205,7 @@ async function bootOwnerNode(
 		partyId: freshPartyId(`offline-${tag}`),
 		nodeClass,
 		keyStore,
-		storage: new MemoryRawStorage(),
+		storage: memoryStorageProvider(),
 		controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS },
 		...(transports ? { transports } : {})
 	})), keyStore);
@@ -248,7 +249,7 @@ async function mintDepartedPeer(owner: OwnerNode): Promise<OfflinePeer> {
 		},
 		nodeClass: 'device',
 		privateKey: key,
-		storage: { provider: () => new MemoryRawStorage() },
+		storage: { open: async () => memoryNodeStorage() },
 		network: {
 			transports: [webSockets()],
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws']
@@ -586,9 +587,10 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 	// membership table and only add siblings afterwards.
 	it('re-boots on stored rows and still serves every control read/write with a BLACKHOLE sibling', async () => {
 		const partyId = freshPartyId('offline-warm-restart');
-		// Shared across both runs: same identity and owner slots, same block storage.
+		// Shared across both runs: same identity and owner slots, same block storage — the
+		// opener is memoized per scope, so the second node reads what the first wrote.
 		const keyStore = new InMemoryKeyStore();
-		const storage = new MemoryRawStorage();
+		const storage = memoryStorageProvider();
 		const config = () => controlNodeConfig({
 			partyId, nodeClass: 'device', keyStore, storage,
 			controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS }

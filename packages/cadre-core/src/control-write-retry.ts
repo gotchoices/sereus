@@ -1,6 +1,6 @@
 import { CoordinatorPartialCommitError, PeersIncompleteError, SyncRetryExhaustedError, TornActionError } from '@optimystic/db-core';
 import { ConcurrentModificationError, PartialCommitError } from '@optimystic/quereus-plugin-optimystic';
-import { causeChain, chainMessages, reportsUnansweredShortfall, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
+import { causeChain, chainMessages, reportsCohortOutOfSpace, reportsUnansweredShortfall, reportsUnreachableCohort, retryControlOperation } from './control-retry.js';
 import type { ControlRetryOptions } from './control-retry.js';
 
 /**
@@ -32,6 +32,11 @@ import type { ControlRetryOptions } from './control-retry.js';
  * re-presented whatever text it carries: {@link reportsPossiblyStoredWrite} vetoes it by type
  * before any matcher runs. The one half-landed write that IS re-presented is a torn write the
  * library marks final — not saved and unable to land ({@link isFinalTornWrite}).
+ *
+ * A cohort with no room left is vetoed the same way, by {@link reportsCohortOutOfSpace}: nothing
+ * about the write's revision is the problem, so a rebase sends the same bytes to the same full
+ * machines. A veto rather than an omission from the matcher list, because the phase-level claim
+ * above would otherwise re-admit one arriving inside a promise-phase aggregate.
  *
  * THREE policies ship from here, and the split is deliberate: the default
  * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
@@ -379,7 +384,7 @@ function isSelfCoordinationGraceRefusal(message: string): boolean {
  * ({@link isUncommittedTransactorAggregate}), a block read the cohort could not answer
  * ({@link reportsUnreachableCohort}), an unanswered super-majority shortfall
  * ({@link reportsUnansweredShortfall}) and a final torn write ({@link isFinalTornWrite}) — and so
- * are both vetoes.
+ * are all three vetoes.
  *
  * Kept empty rather than deleted for two reasons: it is what {@link RETRIABLE_SCHEMA_INIT_MATCHERS}
  * spreads, so the "widened, not replaced" relation between the two policies stays expressed in
@@ -427,8 +432,9 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
  * nothing there, since rows keep the field) poisoned the journal before it
  * ran, leaving nothing unwound — Quereus keeps the failing step's own message, APPENDS the reason the
  * schema could not be restored, and carries the original as `cause`. So a transient cause
- * underneath still matches here, and neither veto ({@link reportsPossiblyStoredWrite},
- * {@link reportsIndeterminateCommit}) looks for that reason text. Retrying over a partially migrated
+ * underneath still matches here, and no veto ({@link reportsPossiblyStoredWrite},
+ * {@link reportsIndeterminateCommit}, {@link reportsCohortOutOfSpace}) looks for that reason text.
+ * Retrying over a partially migrated
  * schema is safe for the same reason the ordinary re-run is: the plugin commits whatever its write
  * batch holds, so storage and the catalog are left in step either way, and the next apply diffs
  * against what is really there. Vetoing it instead would turn a healable transient outage into a
@@ -448,9 +454,10 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * → `Error`), so every claim and veto must work at any depth. Anything that is not an `Error` is
  * never retried.
  *
- * Two vetoes run over the whole chain before any claim: {@link reportsPossiblyStoredWrite}
- * (a spent sync budget, a non-final torn write, a partial commit) and
- * {@link reportsIndeterminateCommit} (a commit-phase transactor aggregate). A chain either veto
+ * Three vetoes run over the whole chain before any claim: {@link reportsPossiblyStoredWrite}
+ * (a spent sync budget, a non-final torn write, a partial commit),
+ * {@link reportsIndeterminateCommit} (a commit-phase transactor aggregate) and
+ * {@link reportsCohortOutOfSpace} (the cohort had no room). A chain any veto
  * flags, at any level, is never retried on the strength of some other level looking transient.
  * Four failures are claimed as retriable: the transactor's get/pend aggregate
  * ({@link isUncommittedTransactorAggregate}, shared with the read classifier), a block read the
@@ -482,9 +489,9 @@ export function isRetriableSchemaInitFailure(error: unknown): boolean {
 /**
  * {@link isRetriableControlWriteFailure} widened by exactly one class — a lost update
  * ({@link isLostUpdate}), claimed by type — for the `CadrePeer` writers that re-read the row inside
- * their locked body. Opt-in per call site, via {@link LOST_UPDATE_RETRY_POLICY}; both vetoes still
- * run first, so a lost update carried inside a partial commit, a spent sync budget or a non-final
- * torn write stays declined.
+ * their locked body. Opt-in per call site, via {@link LOST_UPDATE_RETRY_POLICY}; all three vetoes
+ * still run first, so a lost update carried inside a partial commit, a spent sync budget, a
+ * non-final torn write or a full cohort stays declined.
  */
 export function isRetriableLostUpdateFailure(error: unknown): boolean {
 	return matchesRetriableFailure(error, RETRIABLE_CONTROL_WRITE_MATCHERS, isLostUpdate);
@@ -492,14 +499,16 @@ export function isRetriableLostUpdateFailure(error: unknown): boolean {
 
 /**
  * Shared body of the three classifiers: walk the `cause` chain, let
- * {@link reportsPossiblyStoredWrite} and then {@link reportsIndeterminateCommit} veto it, then claim
+ * {@link reportsPossiblyStoredWrite}, {@link reportsIndeterminateCommit} and
+ * {@link reportsCohortOutOfSpace} veto it, then claim
  * a get/pend transactor aggregate ({@link isUncommittedTransactorAggregate}), a block read the
  * cohort could not answer ({@link reportsUnreachableCohort}), an unanswered
  * super-majority shortfall ({@link reportsUnansweredShortfall}), a final torn write
  * ({@link isFinalTornWrite}) or any link `claimsLink` names, then ask `matchers`. The vetoes run
- * BEFORE any claim for every policy — a chain reporting a possibly-stored write or a commit-phase
- * batch is never retried, however transient some other level looks, and a final torn write or a
- * lost update carried by a partial commit is still declined because a sibling collection landed.
+ * BEFORE any claim for every policy — a chain reporting a possibly-stored write, a commit-phase
+ * batch or a full cohort is never retried, however transient some other level looks, and a final
+ * torn write or a lost update carried by a partial commit is still declined because a sibling
+ * collection landed.
  * `claimsLink` is the one typed claim a policy may add; it sits here beside the shared typed claims
  * so the vetoes stay in one place above all of them.
  *
@@ -517,7 +526,8 @@ function matchesRetriableFailure(
 		return false;
 	}
 	const links = causeChain(error);
-	if (reportsPossiblyStoredWrite(links) || reportsIndeterminateCommit(links)) {
+	if (reportsPossiblyStoredWrite(links) || reportsIndeterminateCommit(links)
+		|| reportsCohortOutOfSpace(links)) {
 		return false;
 	}
 	// NOTE: an unanswered read can fail AFTER this write's log entry is stored: the refresh between

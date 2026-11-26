@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { rmSync } from 'node:fs';
 import { Database } from '@quereus/quereus';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fileNodeStorage } from '@optimystic/db-p2p-storage-fs';
 import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 import { tempStorageDir } from './control-db-node-helpers.js';
 
@@ -18,7 +18,7 @@ import { tempStorageDir } from './control-db-node-helpers.js';
  * data-visibility regression could hide, which is why it gets a spec rather
  * than an argument.
  *
- * Phase 2 builds a FRESH `FileRawStorage` over the same directory, so only the
+ * Phase 2 opens the same directory afresh, so only the
  * bytes on disk cross the phase boundary — the idiom
  * `control-database-solo-warm-start.spec.ts` established (nothing survives in
  * the heap; a handover that only appears to work because the old storage object
@@ -63,7 +63,7 @@ describe('strand transactor handover: local-transactor blocks under the network 
 				schema: SCHEMA,
 				schemaVersion: 1,
 				transactor: 'local',
-				storage: new FileRawStorage(dir)
+				storage: fileNodeStorage(dir)
 			});
 			try {
 				expect(era1.transactor,
@@ -88,7 +88,7 @@ describe('strand transactor handover: local-transactor blocks under the network 
 				strandId,
 				schema: SCHEMA,
 				schemaVersion: 1,
-				storage: new FileRawStorage(dir)
+				storage: fileNodeStorage(dir)
 			});
 			try {
 				// Omitting the option really does land the network transactor — the

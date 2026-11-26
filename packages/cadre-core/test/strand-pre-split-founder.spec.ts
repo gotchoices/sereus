@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { memoryNodeStorage } from '@optimystic/db-p2p';
+import type { NodeStorage } from '@optimystic/db-p2p';
 import type { Database } from '@quereus/quereus';
 import { StrandInstanceManager, type StartStrandConfig } from '../src/strand-instance-manager.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
@@ -42,7 +43,7 @@ interface Fixture {
   sharedKeyPair: Ed25519KeyPair;
   /** Derived from this party's own StrandPartyKey — the post-split founding identity. */
   partyKeyPair: Ed25519KeyPair;
-  storage: MemoryRawStorage;
+  storage: NodeStorage;
   transportKey: PrivateKey;
 }
 
@@ -55,7 +56,7 @@ async function fixture(): Promise<Fixture> {
     partyMemberPrivateKey,
     sharedKeyPair: strandMemberKeyPair(memberPrivateKey),
     partyKeyPair: strandMemberKeyPair(partyMemberPrivateKey),
-    storage: new MemoryRawStorage(),
+    storage: memoryNodeStorage(),
     transportKey: await generateKeyPair('Ed25519'),
   };
 }
@@ -70,7 +71,7 @@ function launchConfig(f: Fixture, founder: boolean): StartStrandConfig {
     sAppConfig: f.sApp,
     roles: NODE_ROLE_PRESETS.device,
     defaultLatencyHint: 'interactive',
-    storage: { provider: () => f.storage },
+    storage: { open: async () => f.storage },
     privateKey: f.transportKey,
     founder,
     partyMemberPrivateKey: founder ? f.partyMemberPrivateKey : undefined,
