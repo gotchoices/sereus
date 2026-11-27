@@ -8,6 +8,8 @@ difficulty: easy
 
 **Blocked category: a dependency outside this repository.** What unblocks it: an Optimystic release that exposes a batched commit over a set of collections — or a decision that the two-second founding cost is accepted and this ticket is declined.
 
+**Filed 2026-11-26** in Optimystic as blocked/batched-commit-over-a-named-set-of-collections (optimystic 80b781e8), at the maintainer's request. This ticket now waits on that one.
+
 ## Why this is a human's call, not an agent's
 
 The change belongs entirely in `../optimystic`. `tickets/rules/sibling-repos.md` forbids agents here from editing, building or filing in that repository, so somebody has to carry the request to its board. Nothing in Sereus has to change for the request to be filed; the Sereus-side work — recording the measured cost, correcting a test bound, adding a budget that catches the next growth — is `implement/control-genesis-gets-a-storage-budget-and-an-honest-test-bound` and does not wait on this.
