@@ -1,0 +1,24 @@
+<!--
+	Example (NativeScript): the page for cadrons-view-model.ts. In its code-behind:
+	  navigatingTo:  page.bindingContext = new CadronsViewModel(client)
+	  navigatedFrom: (page.bindingContext as CadronsViewModel).dispose()
+	  onStar:        (page.bindingContext as CadronsViewModel).toggleStar(args.object.bindingContext.peerId)
+-->
+<Page xmlns="http://schemas.nativescript.org/tns.xsd" navigatingTo="navigatingTo" navigatedFrom="navigatedFrom">
+	<ActionBar title="My machines" />
+	<StackLayout>
+		<Label text="{{ message }}" visibility="{{ message ? 'visible' : 'collapsed' }}" />
+		<ListView items="{{ rows }}">
+			<ListView.itemTemplate>
+				<GridLayout columns="auto, *, auto" padding="8">
+					<Label col="0" width="8" height="8" borderRadius="4" backgroundColor="{{ dot }}" marginRight="10" />
+					<StackLayout col="1">
+						<Label text="{{ title }}" />
+						<Label text="{{ subtitle }}" fontSize="12" color="#666666" />
+					</StackLayout>
+					<Label col="2" text="{{ star }}" tap="onStar" visibility="{{ thisDevice ? 'collapsed' : 'visible' }}" />
+				</GridLayout>
+			</ListView.itemTemplate>
+		</ListView>
+	</StackLayout>
+</Page>

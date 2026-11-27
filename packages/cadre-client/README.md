@@ -6,6 +6,8 @@ anybody can reach this device, and which cadrons an invitation names. Every oper
 result instead of throwing; each piece of screen state is a store any UI framework binds to.
 
 The model behind it: [The cadre client](https://github.com/gotchoices/sereus/blob/master/docs/cadre/cadre-client.md).
+Wiring it into an app, step by step: [ADOPTING.md](ADOPTING.md). Screens to copy (React Native,
+Svelte, NativeScript): [examples/](examples/README.md).
 
 ## Install
 

@@ -8,6 +8,8 @@
 	"files": [
 		"src",
 		"dist",
+		"examples",
+		"ADOPTING.md",
 		"!**/*.tsbuildinfo"
 	],
 	"exports": {
