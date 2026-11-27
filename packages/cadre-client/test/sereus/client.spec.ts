@@ -1,5 +1,6 @@
 /**
- * Reachability over a stand-in node: who answers an invitation from this device.
+ * Over a stand-in node: who answers an invitation from this device, and which cadrons this device
+ * is connected to.
  */
 import { describe, expect, it } from 'vitest';
 import type { CadreNode } from '@serfab/cadre-core';
@@ -14,9 +15,19 @@ function fakeHost(opts: {
 	machines?: Machine[];
 	relays?: string[];
 	hang?: boolean;
+	/** Peers holding a control connection to this device. */
+	connectedTo?: string[];
+	/** Receives the control node's libp2p event listeners. */
+	control?: EventTarget;
 }): CadreHost {
 	const never = new Promise<never>(() => {});
+	const control = opts.control ?? new EventTarget();
+	const controlNode = Object.assign(control, {
+		getConnections: () => (opts.connectedTo ?? []).map(id => ({ remotePeer: { toString: () => id } })),
+	});
 	const node = {
+		running: true,
+		getControlNode: () => controlNode,
 		peerId: { toString: () => 'self' },
 		getMultiaddrs: () => opts.ownAddrs ?? [],
 		invitationReach: () => (opts.hang ? never : Promise.resolve(opts.reach ?? 'issuer-only')),
@@ -79,5 +90,32 @@ describe('reachability', () => {
 		const started = Date.now();
 		expect((await client.reachability.get()).reachable).toBe(false);
 		expect(Date.now() - started).toBeLessThan(1000);
+	});
+});
+
+describe('connected cadrons', () => {
+	const phone: Machine = { peerId: 'phone2', isSelf: false, trusted: true, alwaysOn: false, lastPublishedAt: Date.now() - 60_000 };
+
+	it('marks the cadrons this device holds a control connection to, and itself while its node runs', async () => {
+		const client = createCadreClient(fakeHost({ machines: [server, phone], connectedTo: ['server'] }));
+		const status = await client.cadre.status();
+		const byId = new Map(status.ok ? status.value.machines.map(m => [m.peerId, m.connected]) : []);
+		expect([...byId]).toEqual([['self', true], ['server', true], ['phone2', false]]);
+	});
+
+	it('reports cadrons connecting and dropping, once per burst', async () => {
+		const control = new EventTarget();
+		const client = createCadreClient(fakeHost({ control }), { peerChangeMs: 30 });
+		let calls = 0;
+		const off = client.changes.cadre(() => { calls++; });
+		control.dispatchEvent(new Event('peer:connect'));
+		control.dispatchEvent(new Event('peer:disconnect'));
+		control.dispatchEvent(new Event('peer:connect'));
+		await new Promise(r => setTimeout(r, 80));
+		expect(calls).toBe(1);
+		off();
+		control.dispatchEvent(new Event('peer:connect'));
+		await new Promise(r => setTimeout(r, 80));
+		expect(calls).toBe(1);
 	});
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { addressKind } from '../src/address.js';
 import { DEFAULT_CADRON_PREFERENCES, normalizePreferences, planBootstrap, type CadronCandidate } from '../src/bootstrap.js';
 import { describeInvitation, qrVersionFor } from '../src/invitation-text.js';
+import { cadronPresence, RECENT_RECORD_MS } from '../src/model.js';
 
 const KJEIB = '12D3KooWHA9QDCHrzvezCn4oHuqUfDgdwwQaRdn7bMAyenKmofdM';
 const HOME = '12D3KooWQnnujQQD9S1CcXtvWc1jB5h6xGZtaz9zSfgswcXDY7eN';
@@ -117,5 +118,15 @@ describe('describeInvitation', () => {
 		expect(text.qrVersion).toBe(qrVersionFor(link.length));
 		expect(qrVersionFor(2331)).toBe(40);
 		expect(qrVersionFor(2332)).toBeNull();
+	});
+});
+
+describe('cadronPresence', () => {
+	it('is connected, recent, quiet or unknown', () => {
+		const now = 1_000_000_000;
+		expect(cadronPresence({ connected: true, lastSeenAt: null }, now)).toBe('connected');
+		expect(cadronPresence({ connected: false, lastSeenAt: now - 60_000 }, now)).toBe('recent');
+		expect(cadronPresence({ connected: false, lastSeenAt: now - RECENT_RECORD_MS }, now)).toBe('quiet');
+		expect(cadronPresence({ connected: false, lastSeenAt: null }, now)).toBe('unknown');
 	});
 });

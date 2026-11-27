@@ -37,7 +37,8 @@ import { cadreStore, reachabilityStore } from '@serfab/cadre-client';
 
 const client = createCadreClient(edgeNodeHost(phone, { ownerKeyStore, preferences: mySlot }));
 
-const cadrons = cadreStore(client);           // { state, value: CadreStatus, error }
+const cadrons = cadreStore(client);           // { state, value: CadreStatus, error }; each cadron's
+                                              // `connected`, `lastSeenAt` → cadronPresence(m): a status dot
 const reach = reachabilityStore(client);      // { state, value: Reachability, error }
 
 await client.cadre.inspectNodeCode(scanned);  // preview, for the person to approve

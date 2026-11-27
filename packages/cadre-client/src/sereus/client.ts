@@ -43,6 +43,8 @@ export interface CadreClientOptions {
 	controlOpMs?: number;
 	/** How long a reading of the party's own machines' reach is reused. Default 15 s. */
 	ownMachineTtlMs?: number;
+	/** A burst of cadrons connecting or dropping is reported once, this long after the last. Default 750 ms. */
+	peerChangeMs?: number;
 	/** Where the client reports (claims by peer id only; never a code). Default `console`. */
 	log?: { info(...args: unknown[]): void; warn(...args: unknown[]): void };
 }
@@ -73,6 +75,7 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 	const controlReadMs = opts.controlReadMs ?? 6000;
 	const controlOpMs = opts.controlOpMs ?? 15_000;
 	const ownMachineTtlMs = opts.ownMachineTtlMs ?? 15_000;
+	const peerChangeMs = opts.peerChangeMs ?? 750;
 	const log = opts.log ?? console;
 	let claiming = false;
 	let ownMachine: { node: CadreNode; at: number; answers: boolean } | null = null;
@@ -129,7 +132,7 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 			// The owner key this node signs with (sereus 1.17: separate from the machine's identity).
 			const ownerKey = node?.getOwnerSigner()?.publicKey;
 			const machines: CadreMachine[] = peerId
-				? [{ peerId, thisDevice: true, addresses: [], alwaysOn: null, lastSeenAt: null }]
+				? [{ peerId, thisDevice: true, addresses: [], alwaysOn: null, lastSeenAt: null, connected: node?.running === true }]
 				: [];
 			if (node) {
 				// Best effort and bounded: the list fills in when the control network answers.
@@ -138,6 +141,8 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 					withTimeout(node.listMachines(), controlReadMs, 'listMachines').catch(() => []),
 				]);
 				const record = new Map(records.map(r => [r.peerId, r]));
+				// Who this device holds a control connection to now.
+				const connected = new Set(node.getControlNode()?.getConnections().map(c => c.remotePeer.toString()) ?? []);
 				const seen = new Set<string>(peerId ? [peerId] : []);
 				for (const m of members) {
 					if (seen.has(m.peerId)) continue;
@@ -149,12 +154,16 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 						addresses: m.multiaddr ? m.multiaddr.split(',').map(a => a.trim()).filter(Boolean) : [],
 						alwaysOn: r?.alwaysOn ?? null,
 						lastSeenAt: r?.lastPublishedAt ?? null,
+						connected: connected.has(m.peerId),
 					});
 				}
 				for (const r of records) {
 					if (r.isSelf || seen.has(r.peerId)) continue;
 					seen.add(r.peerId);
-					machines.push({ peerId: r.peerId, thisDevice: false, addresses: [], alwaysOn: r.alwaysOn, lastSeenAt: r.lastPublishedAt });
+					machines.push({
+						peerId: r.peerId, thisDevice: false, addresses: [], alwaysOn: r.alwaysOn, lastSeenAt: r.lastPublishedAt,
+						connected: connected.has(r.peerId),
+					});
 				}
 			}
 			// The person's own names and preferred cadrons.
@@ -254,6 +263,38 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 		return () => off.forEach(u => u());
 	};
 
+	/**
+	 * A cadron connecting or dropping. cadre-core emits no per-peer event, so this listens to the
+	 * control node's libp2p `peer:connect` / `peer:disconnect`, collapsing a burst into one call
+	 * `peerChangeMs` after the last, and re-attaches when the node restarts (`control:connected`).
+	 */
+	const onPeers = (onChange: () => void) => {
+		let timer: unknown = null;
+		const fire = () => {
+			if (timer !== null) clearTimeout(timer);
+			timer = setTimeout(() => { timer = null; onChange(); }, peerChangeMs);
+		};
+		let detach: (() => void) | null = null;
+		const attach = () => {
+			detach?.();
+			const control = host.node.node?.getControlNode();
+			if (!control) { detach = null; return; }
+			control.addEventListener('peer:connect', fire);
+			control.addEventListener('peer:disconnect', fire);
+			detach = () => {
+				control.removeEventListener('peer:connect', fire);
+				control.removeEventListener('peer:disconnect', fire);
+			};
+		};
+		attach();
+		const offStart = host.node.on('control:connected', attach);
+		return () => {
+			offStart();
+			detach?.();
+			if (timer !== null) clearTimeout(timer);
+		};
+	};
+
 	return {
 		cadre,
 		reachability,
@@ -262,8 +303,9 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 		changes: {
 			cadre: onChange => {
 				const offControl = onControl(onChange);
+				const offPeers = onPeers(onChange); // `connected` in the machine list
 				const offPrefs = onInvitations(onChange); // names and preferred show in the machine list
-				return () => { offControl(); offPrefs(); };
+				return () => { offControl(); offPeers(); offPrefs(); };
 			},
 			invitations: onInvitations,
 			reachability(onChange) {

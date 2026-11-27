@@ -22,6 +22,22 @@ reservation. A device also counts as reachable when one of its always-on cadrons
 that reaches from anywhere, because an invitation names that cadron and it answers a join for the
 party. A relay is then not needed to invite anybody.
 
+## Whether a cadron is alive
+
+Each cadron in the status carries `connected` and `lastSeenAt`, and `cadronPresence` reads them
+as one state for a status dot:
+
+- **Connected:** this device holds a control-network connection to the cadron now. Every machine
+  dials the always-on machines, so for an always-on cadron this is the answer.
+- **Recent:** not connected, but its address record was published within 15 minutes, the record's
+  freshness window; a running machine re-publishes every 7.5. Two phones rarely connect to each
+  other even while both run, so a phone usually reads this way.
+- **Quiet:** heard from, longer ago. **Unknown:** its record has not reached this device.
+
+This device counts as connected while its own node runs. The machine list re-reads when a cadron
+connects or drops: cadre-core emits no per-peer event, so the client listens to the control
+node's libp2p connection events.
+
 ## Which cadrons an invitation names
 
 An open strand invitation carries a bootstrap list, the addresses a joiner dials to reach one of

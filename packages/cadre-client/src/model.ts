@@ -24,6 +24,13 @@ export type CadreMachine = {
 	alwaysOn: boolean | null;
 	/** When the machine last re-published its own record (epoch ms): roughly when it was last heard from. Null when unknown. */
 	lastSeenAt: number | null;
+	/**
+	 * This device holds a control-network connection to it right now (any kind, relayed included).
+	 * Reliable for an always-on cadron, which every machine dials; two phones are rarely connected
+	 * to each other even while both run, so for a phone read `lastSeenAt` too (`cadronPresence`).
+	 * For this device: its own node is running.
+	 */
+	connected: boolean;
 	/** The person's own name for it (`CadronPreferences.names`), or null. */
 	name?: string | null;
 	/** Named first in invitations (`CadronPreferences.preferred`). */
@@ -173,6 +180,29 @@ export interface CadreView {
 export interface ReachabilityView {
 	reachability: ReachabilityModel;
 	changes: { reachability(onChange: () => void): () => void };
+}
+
+/**
+ * How recently a cadron was alive, for a status dot:
+ * - `connected`: this device holds a connection to it now (`CadreMachine.connected`);
+ * - `recent`: not connected, but it published its record within `RECENT_RECORD_MS`, so it is
+ *   running somewhere (a phone usually reads this way);
+ * - `quiet`: heard from, longer ago;
+ * - `unknown`: never heard from (its record has not reached this device).
+ */
+export type CadronPresence = 'connected' | 'recent' | 'quiet' | 'unknown';
+
+/**
+ * A running machine re-publishes its record every 7.5 minutes, and a record older than 15 is
+ * stale: cadre-core's `DEFAULT_PEER_RECORD_HEARTBEAT_MS` and `DEFAULT_PEER_RECORD_MAX_AGE_MS`
+ * (repeated here; this entry point loads no cadre-core).
+ */
+export const RECENT_RECORD_MS = 15 * 60 * 1000;
+
+export function cadronPresence(machine: Pick<CadreMachine, 'connected' | 'lastSeenAt'>, now: number = Date.now()): CadronPresence {
+	if (machine.connected) return 'connected';
+	if (machine.lastSeenAt === null) return 'unknown';
+	return now - machine.lastSeenAt < RECENT_RECORD_MS ? 'recent' : 'quiet';
 }
 
 /** First 8 characters of an owner key: the fingerprint a claimed node shows as its owner. */
