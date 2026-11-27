@@ -79,14 +79,23 @@ English `message` for logs.
 
 ## Using it from source before a release
 
-From a clone of this repository, build it (`yarn workspace @serfab/cadre-client build`), then:
+Install a **packed tarball**, not a link. From a clone of this repository:
 
-- **Node or web app:** `"@serfab/cadre-client": "portal:../sereus/packages/cadre-client"`. A
-  `portal:` honours the peer dependency, so the app's own cadre-core is used.
-- **React Native app:** Metro does not follow links outside the project. Add the package folder to
-  `watchFolders`, and resolve `@serfab/cadre-core` (and the libp2p packages) from the app's own
-  `node_modules` so one copy is bundled; or install a packed tarball (`npm pack`, then a `file:`
-  dependency), repacking after each change.
+```sh
+cd sereus/packages/cadre-client
+yarn build && yarn pack --out /path/to/your-app/.local-packages/serfab-cadre-client.tgz
+```
+
+then in the app: `"@serfab/cadre-client": "file:.local-packages/serfab-cadre-client.tgz"` and
+`yarn install`. Repack and reinstall after each change to the package.
+
+- **Why not `portal:` or `link:`:** through a link, the package's own `import '@serfab/cadre-core'`
+  resolves from its real location, this repository's workspace, so the app ends up with two
+  copies of cadre-core: `instanceof` checks fail across them (a refused claim is no longer
+  recognised as one) and TypeScript sees two `CadreNode` types. Installed by copy, the peer
+  resolves from the app's own `node_modules`.
+- **React Native:** a tarball needs no Metro changes (no watch folders, no resolver aliases).
+- `yarn pack` rewrites the `workspace:^` peer range to the released one (`^1.25.0`).
 
 ## Rules the package keeps
 
