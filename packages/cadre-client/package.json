@@ -1,0 +1,57 @@
+{
+	"name": "@serfab/cadre-client",
+	"version": "1.25.0",
+	"type": "module",
+	"description": "Cadre management for Sereus apps, without UI: cadrons (the cadre's machines), claiming a node by its code, owner key backup, relays, reachability, and which cadrons an invitation names",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"files": [
+		"src",
+		"dist",
+		"!**/*.tsbuildinfo"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./sereus": {
+			"types": "./dist/sereus/index.d.ts",
+			"import": "./dist/sereus/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/gotchoices/sereus.git",
+		"directory": "packages/cadre-client"
+	},
+	"keywords": [
+		"sereus",
+		"cadre",
+		"cadron",
+		"invitation"
+	],
+	"scripts": {
+		"clean": "rimraf dist",
+		"build": "tsc -p tsconfig.build.json",
+		"typecheck": "tsc -p tsconfig.typecheck.json --noEmit",
+		"test": "vitest run",
+		"dev:test": "vitest"
+	},
+	"dependencies": {
+		"@multiformats/multiaddr": "^13.0.3"
+	},
+	"peerDependencies": {
+		"@serfab/cadre-core": "workspace:^"
+	},
+	"devDependencies": {
+		"@serfab/cadre-core": "workspace:^",
+		"@types/node": "^25.0.10",
+		"rimraf": "^6.1.2",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.17"
+	},
+	"author": "Got Choices Foundation",
+	"license": "MIT"
+}

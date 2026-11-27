@@ -5084,6 +5084,21 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@serfab/cadre-client@workspace:packages/cadre-client":
+  version: 0.0.0-use.local
+  resolution: "@serfab/cadre-client@workspace:packages/cadre-client"
+  dependencies:
+    "@multiformats/multiaddr": "npm:^13.0.3"
+    "@serfab/cadre-core": "workspace:^"
+    "@types/node": "npm:^25.0.10"
+    rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.9.3"
+    vitest: "npm:^4.0.17"
+  peerDependencies:
+    "@serfab/cadre-core": "workspace:^"
+  languageName: unknown
+  linkType: soft
+
 "@serfab/cadre-core@workspace:*, @serfab/cadre-core@workspace:^, @serfab/cadre-core@workspace:packages/cadre-core":
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-core@workspace:packages/cadre-core"

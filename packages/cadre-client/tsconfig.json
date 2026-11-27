@@ -1,0 +1,22 @@
+{
+	"compilerOptions": {
+		"outDir": "dist",
+		"rootDir": "src",
+		"module": "NodeNext",
+		"target": "ES2022",
+		// No DOM or Node types: the package runs on React Native, browsers, Node and NativeScript,
+		// and src/globals.d.ts declares the few host globals it uses.
+		"lib": ["ES2022"],
+		"types": [],
+		"moduleResolution": "NodeNext",
+		"declaration": true,
+		"sourceMap": true,
+		"strict": true,
+		"skipLibCheck": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true
+	},
+	"include": [
+		"src"
+	]
+}
