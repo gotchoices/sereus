@@ -82,23 +82,19 @@ English `message` for logs.
 
 ## Using it from source before a release
 
-Install a **packed tarball**, not a link. From a clone of this repository:
+Until a sereus release includes it, take it from a sereus clone. The app's cadre-core and this
+package's must be the same copy, so:
 
-```sh
-cd sereus/packages/cadre-client
-yarn build && yarn pack --out /path/to/your-app/.local-packages/serfab-cadre-client.tgz
-```
+- **The app runs the whole stack from local clones** (a local-stack mode: cadre-core, Optimystic,
+  Quereus by `portal:` / `link:`): link this package from the same clone,
+  `"@serfab/cadre-client": "portal:../sereus/packages/cadre-client"`, built (`yarn build` there).
+- **The app takes the stack from npm:** install a packed tarball (`yarn build && yarn pack --out
+  <app>/.local-packages/serfab-cadre-client.tgz` here, then `"file:.local-packages/serfab-cadre-client.tgz"`
+  in the app). Repack and reinstall after each change.
+- **Never link it while cadre-core comes from npm:** its cadre-core import would resolve to this
+  repository's copy, a second one (two `CadreNode` types, `instanceof` failing across them).
 
-then in the app: `"@serfab/cadre-client": "file:.local-packages/serfab-cadre-client.tgz"` and
-`yarn install`. Repack and reinstall after each change to the package.
-
-- **Why not `portal:` or `link:`:** through a link, the package's own `import '@serfab/cadre-core'`
-  resolves from its real location, this repository's workspace, so the app ends up with two
-  copies of cadre-core: `instanceof` checks fail across them (a refused claim is no longer
-  recognised as one) and TypeScript sees two `CadreNode` types. Installed by copy, the peer
-  resolves from the app's own `node_modules`.
-- **React Native:** a tarball needs no Metro changes (no watch folders, no resolver aliases).
-- `yarn pack` rewrites the `workspace:^` peer range to the released one (`^1.25.0`).
+Step by step: [ADOPTING.md](ADOPTING.md), "1. Install".
 
 ## Rules the package keeps
 

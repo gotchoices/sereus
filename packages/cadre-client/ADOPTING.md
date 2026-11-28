@@ -6,23 +6,46 @@ the API summary is the [README](README.md); screens to copy are in [examples/](e
 
 ## 1. Install
 
-After a sereus release that includes the package: `yarn add @serfab/cadre-client`, at the same
-version as the app's `@serfab/cadre-core` (a peer dependency: one copy, the app's).
+**After a sereus release that includes the package:** `yarn add @serfab/cadre-client`, at the
+same version as the app's `@serfab/cadre-core`. Nothing below applies any more.
 
-Before then, install a packed tarball from a sereus clone (the README's "Using it from source
-before a release"):
+**Until then**, the package exists only in the sereus repository (`packages/cadre-client`, on
+`master`). It is a peer of cadre-core, so the one rule is: **the app's cadre-core and
+cadre-client's cadre-core must be the same copy.** Which way satisfies it depends on where the
+app takes the rest of the stack from.
+
+| The app takes cadre-core, Optimystic, Quereus… from | Take cadre-client from | Spec |
+|---|---|---|
+| **Local clones** (a "local stack" mode: `portal:` or `link:` to `ser/sereus/packages/cadre-core` and the rest) | the same sereus clone, linked like the others | `"@serfab/cadre-client": "portal:../sereus/packages/cadre-client"` |
+| **npmjs.org** (published versions) | a tarball packed from a sereus clone | `"@serfab/cadre-client": "file:.local-packages/serfab-cadre-client.tgz"` |
+| — | or wait for the release | — |
+
+**Never mix them**: cadre-client linked from the clone while cadre-core comes from npm. Through
+a link, cadre-client's own `import '@serfab/cadre-core'` resolves from where its files really are,
+the clone's workspace, so the app ends up with two copies: TypeScript sees two `CadreNode` types,
+and at run time `instanceof` fails across them (a refused claim is no longer recognised as one).
+
+### Linked, with a local stack
+
+- Keep the sereus clone pulled and **built**: the link points at its `dist`
+  (`yarn workspace @serfab/cadre-client build` in the clone, or the whole repo's `yarn build`).
+- Link it the way the app links cadre-core. In a React Native app that means whatever its Metro
+  config already does for the local stack (watch folders, source aliases): add cadre-client to the
+  same lists.
+- A change in the clone shows up after a rebuild there; no reinstall.
+
+### A tarball, with the stack from npm
 
 ```sh
 (cd ../sereus/packages/cadre-client && yarn build && yarn pack --out "$OLDPWD/.local-packages/serfab-cadre-client.tgz")
 ```
 
-```json
-"@serfab/cadre-client": "file:.local-packages/serfab-cadre-client.tgz"
-```
-
-Not `portal:` or `link:`: through a link the package's cadre-core import resolves to the clone's
-own copy. React Native needs no Metro changes for a tarball. Add `.local-packages/` to
-`.gitignore`; repack and `yarn install` after each change to the package.
+- In `package.json`: `"@serfab/cadre-client": "file:.local-packages/serfab-cadre-client.tgz"`,
+  then `yarn install`. Add `.local-packages/` to `.gitignore`.
+- Installed by copy, its peer resolves from the app's own `node_modules`: one cadre-core. React
+  Native needs no Metro changes.
+- `yarn pack` rewrites the `workspace:^` peer range to the released one (`^1.25.0`).
+- After a change to the package: repack, then `yarn install` again.
 
 ## 2. Create the client
 
