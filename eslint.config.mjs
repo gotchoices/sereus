@@ -360,6 +360,7 @@ export default tseslint.config(
 	{
 		files: [
 			'packages/cadre-core/src/**/*.ts',
+			'packages/cadre-client/src/**/*.ts',
 			'packages/cadre-cli/src/**/*.ts',
 			'packages/cadre-host/src/**/*.ts',
 			'packages/cadre-provider/src/**/*.ts',
