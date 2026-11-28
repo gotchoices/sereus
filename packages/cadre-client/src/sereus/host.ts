@@ -47,4 +47,10 @@ export interface CadreHost {
 	 * session only.
 	 */
 	preferences?: { load(): Promise<string | undefined>; save(text: string): Promise<void> };
+	/**
+	 * The owner key's private half, for an app that keeps it its own way (not in a key store's owner
+	 * slot, say derived from the node's identity). Used by `exportOwnerKey` instead of
+	 * `ownerKeyStore`; null when there is none to export. Never log what it returns.
+	 */
+	exportOwnerKey?: () => Promise<string | null>;
 }

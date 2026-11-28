@@ -21,10 +21,11 @@ yarn add @serfab/cadre-client @serfab/cadre-core
 
 - **`@serfab/cadre-client`** loads no cadre-core code. Types (`Cadron`, `CadreStatus`,
   `Reachability`, `CadronPreferences`, `BootstrapPlan`, `InvitationText`, …), results
-  (`CadreResult`, `cadreOk`, `cadreFail`), node-code text (`isNodeCode`, `nodeCodeFromUrl`),
+  (`CadreResult`, `cadreOk`, `cadreFail`), node-code text (`isNodeCode`, `nodeCodeFromUrl`) and the
+  one-slot `nodeCodeInbox`,
   address judgement (`addressKind`, `nodeReach`), the pure planner (`planBootstrap`,
   `describeInvitation`) and stores (`cadreStore`, `reachabilityStore`,
-  `invitationReadinessStore`, `writable`, `loader`).
+  `invitationReadinessStore`, `writable`, `loader`; `cadreStore(view, { pollMs })`).
 - **`@serfab/cadre-client/sereus`** works over a running node: `createCadreClient(host)`,
   `edgeNodeHost(edge, options)`, `readNodeCode`, `classifyClaimFailure`.
 
@@ -43,14 +44,31 @@ const cadrons = cadreStore(client);           // { state, value: CadreStatus, er
                                               // `connected`, `lastSeenAt` → cadronPresence(m): a status dot
 const reach = reachabilityStore(client);      // { state, value: Reachability, error }
 
-await client.cadre.inspectNodeCode(scanned);  // preview, for the person to approve
+await client.cadre.inspectNodeCode(scanned);  // preview (peer, reach, this cadre's id and owner fingerprint) to approve
 await client.cadre.claimNode(scanned);        // after they approve
 const who = await client.invitable();         // before minting a strand invitation
 ```
 
+### Adding and removing cadrons
+
+```ts
+await client.cadre.connectNode('/dns4/node.example.com/tcp/443/wss/p2p/<peerId>'); // a node listening for seeds:
+                                              // authorized, seed delivered (or returned to hand over another way)
+await client.cadre.createSeed();              // for a node not created yet; authorizes nothing
+
+const plan = await client.cadre.planRemoval(peerId);     // invitations it closes, closed strands re-keyed
+await client.cadre.removeMachine(peerId);                // the complete removal; `removal-refused` for self / no owner key
+client.changes.removed(peerId => forgetSavedAddresses(peerId)); // here, or found gone on a re-read
+
+const inbox = nodeCodeInbox();                // hold a code that arrives before the screen can show it
+linking.onUrl(url => inbox.offer(url));       // the app's link listener
+```
+
 `preferences` is any `{ load(): Promise<string | undefined>; save(text): Promise<void> }`; without
-it, cadron preferences last for the session. An app with its own node service implements
-`CadreHost` itself.
+it, cadron preferences last for the session. The text is opaque to the app (it carries its own
+format version). An app with its own node service implements `CadreHost` itself
+([ADOPTING.md](ADOPTING.md) has one over a plain `CadreNode`); `CadreHost.exportOwnerKey` serves an
+app that keeps the owner key its own way.
 
 ### Invitations
 

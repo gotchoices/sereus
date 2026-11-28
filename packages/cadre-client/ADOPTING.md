@@ -64,19 +64,65 @@ const client = createCadreClient(edgeNodeHost(phone, {
 }));
 ```
 
-**With a node service of the app's own** (a hand-built `CadreNode`), implement `CadreHost` from
-`@serfab/cadre-client/sereus`: `node` (the running node or null), `on` (node events, re-attached
-across restarts), `getRelayAddrs` / `applyRelays`, `partyId`, `ownerEnrolled`, `relayStatus`,
-`onReachabilityChange`, and optionally `ownerKeyStore` and `preferences`. Each member is a line or
-two over the service. Create the client once, for the app's lifetime.
+**With a node service of the app's own** (a hand-built `CadreNode`), implement `CadreHost`. A
+reference, over a service that builds the node and can rebuild it (`service.node`,
+`service.restart(options)`):
+
+```ts
+import type { CadreHost } from '@serfab/cadre-client/sereus';
+
+// Relays are read when a node is BUILT (`network.relayAddrs`), so the service keeps them and a new
+// set rebuilds the node. Persist them where the service keeps its start options.
+const relaySlot = { load: () => AsyncStorage.getItem('relays'), save: (t: string) => AsyncStorage.setItem('relays', t) };
+const readRelays = async (): Promise<string[]> => JSON.parse((await relaySlot.load()) ?? '[]');
+
+const host: CadreHost = {
+	ownerKeyStore,                                   // or exportOwnerKey, below
+	preferences,                                     // as above
+	node: {
+		get node() { return service.node; },          // the running node, or null
+		on: (event, handler) => service.on(event, handler), // must re-attach to each node the service builds
+		getRelayAddrs: readRelays,
+		async applyRelays(addrs) {
+			const current = await readRelays();
+			if (addrs.length === current.length && addrs.every((a, i) => a === current[i])) return;
+			await relaySlot.save(JSON.stringify(addrs));
+			await service.restart({ relayAddrs: addrs }); // stop, build with the new relays, start
+		},
+		partyId: () => service.partyId,
+		ownerEnrolled: () => service.ownerEnrolled,     // owner genesis ran: this device can sign
+		relayStatus: () => service.node?.getRelayReservationState().status ?? null,
+		onReachabilityChange(onChange) {
+			// The control node's own addresses changing (`self:peer:update`), and each rebuild.
+			const watch = () => {
+				const control = service.node?.getControlNode();
+				control?.addEventListener('self:peer:update', onChange);
+				return () => control?.removeEventListener('self:peer:update', onChange);
+			};
+			let unwatch = watch();
+			const offRestart = service.onRestart(() => { unwatch(); unwatch = watch(); onChange(); });
+			return () => { offRestart(); unwatch(); };
+		},
+	},
+};
+```
+
+- **No relays?** An app whose service cannot rebuild its node can make `applyRelays` throw; the
+  client reports the failure and leaves the relays as they were. Reachability then counts only an
+  always-on cadron with a public address.
+- **The owner key kept its own way** (derived from the node's identity, say): give
+  `exportOwnerKey: async () => privateKeyOrNull` instead of `ownerKeyStore`.
+- Create the client once, for the app's lifetime.
 
 ## 3. The cadre screen
 
 | Show or do | Call | Store |
 |---|---|---|
 | This device and its cadrons, with a status dot each | `client.cadre.status()` | `cadreStore(client)`; `cadronPresence(machine)` per row |
-| Add a cadron from its code (scanned or pasted) | `cadre.inspectNodeCode(text)`, then after the person approves `cadre.claimNode(text)` | |
-| Remove a cadron | `cadre.removeMachine(peerId)` | |
+| Add a cadron from its code (scanned or pasted) | `cadre.inspectNodeCode(text)`, then after the person approves `cadre.claimNode(text)` | `nodeCodeInbox()` holds a code that arrives early |
+| Add a node listening for seeds, by its address | `cadre.connectNode(address)` (returns a seed to hand over when not delivered) | |
+| A seed for a node not created yet | `cadre.createSeed()` (authorizes nothing) | |
+| Remove a cadron | `cadre.planRemoval(peerId)` for the confirmation, then `cadre.removeMachine(peerId)` | `client.changes.removed(peerId => …)` |
 | Back up the owner key (behind a confirmed, private reveal) | `cadre.exportOwnerKey()` | |
 | Relays | `client.relays.get()` / `set(addrs)` | |
 | Whether anybody can reach this device | `client.reachability.get()` | `reachabilityStore(client)` |
@@ -85,8 +131,14 @@ two over the service. Create the client once, for the app's lifetime.
 Rules for the screen:
 
 - **Never claim on a code alone.** A link or QR code can come from anyone: show what
-  `inspectNodeCode` says (the cadron's short id, whether it is reachable from anywhere) and claim
-  only after the person approves.
+  `inspectNodeCode` says (the cadron's short id, whether it is reachable from anywhere, and this
+  cadre's network id and owner fingerprint, which the node shows once it joins) and claim only
+  after the person approves.
+- **An honest removal:** confirm with what `planRemoval` says (the invitations it closes, the
+  closed strands re-keyed). Keep per-cadron state (saved addresses) in step with `changes.removed`.
+- **A store kept subscribed app-wide** (a status badge): `cadreStore(client, { pollMs })` can poll
+  less often; [What re-reads a store](https://github.com/gotchoices/sereus/blob/master/docs/cadre/cadre-client.md#what-re-reads-a-store)
+  says what the poll is for.
 - **Never log a node code or an invitation link**; they carry secrets. Log peer ids.
 - **The status dot:** connected (green) means this device holds a connection to the cadron now;
   recent (amber) that it is running elsewhere. Another phone usually shows recent, not connected.
@@ -122,14 +174,16 @@ Every operation returns `CadreResult<T>`; render `error.kind` (and `reason` wher
 the app's own strings, and fall back to `error.message`. `CADRE_ERROR_KINDS` lists every kind for a
 catalog: `unreachable`, `unavailable`, `invalid-node-code` (`reason`: `not-node-code`,
 `newer-version`, `damaged`), `node-unreachable` (`reason`: `anywhere`, `home-network`),
-`claim-refused`, `claim-failed` (`reason` `busy`), `not-supported`, `unexpected`. `retryable` says
-whether trying again can help.
+`claim-refused`, `claim-failed` (`reason` `busy`), `removal-refused` (`reason`: `not-an-owner`,
+`self`), `invalid-address` (`reason`: `unparsable`, `no-peer-id`), `not-supported`, `unexpected`.
+`retryable` says whether trying again can help.
 
 ## 6. Checklist
 
 - [ ] One `@serfab/cadre-core` in the app (the package is a peer, not a second copy).
 - [ ] The client created once, with `ownerKeyStore` and `preferences`.
-- [ ] The cadre screen: status dots, add with approval, remove, owner key backup, relays.
+- [ ] The cadre screen: status dots, add with approval, remove after `planRemoval`, owner key backup, relays.
+- [ ] Incoming node-code links handed to a `nodeCodeInbox`; the screen takes them when it can prompt.
 - [ ] Invitations minted through `withBootstrap`; readiness shown with the right `newStrand`.
 - [ ] Error kinds in the app's string catalog.
 - [ ] No node code or invitation link in logs.
@@ -137,6 +191,5 @@ whether trying again can help.
 ## Not covered yet
 
 Joining an existing cadre from a second app (`EdgeNode.joinCadre`, strand move, dissolving the
-former party), cadre invitations and join approvals, owner keys beyond backup, and machine removal
-through `planMachineRemoval`. Each is cadre-core API the package does not wrap yet; see
+former party), cadre invitations and join approvals, and owner keys beyond backup. Each is cadre-core API the package does not wrap yet; see
 [Several apps in one cadre](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md).

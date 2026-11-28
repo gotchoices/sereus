@@ -3,7 +3,8 @@
  * is connected to.
  */
 import { describe, expect, it } from 'vitest';
-import type { CadreNode } from '@serfab/cadre-core';
+import { randomBytes } from 'node:crypto';
+import { MachineRemovalRefusedError, type CadreNode } from '@serfab/cadre-core';
 import { createCadreClient } from '../../src/sereus/client.js';
 import type { CadreHost } from '../../src/sereus/host.js';
 
@@ -19,6 +20,9 @@ function fakeHost(opts: {
 	connectedTo?: string[];
 	/** Receives the control node's libp2p event listeners. */
 	control?: EventTarget;
+	/** Stand-ins for the node's own calls, merged over the defaults. */
+	extra?: Record<string, unknown>;
+	host?: Partial<CadreHost>;
 }): CadreHost {
 	const never = new Promise<never>(() => {});
 	const control = opts.control ?? new EventTarget();
@@ -34,6 +38,8 @@ function fakeHost(opts: {
 		listMachines: () => (opts.hang ? never : Promise.resolve(opts.machines ?? [])),
 		listMembers: () => Promise.resolve([]),
 		getOwnerSigner: () => null,
+		removePeer: () => { throw new Error('removePeer must not be used: it leaves invitations and closed-strand keys'); },
+		...opts.extra,
 	} as unknown as CadreNode;
 	return {
 		node: {
@@ -46,6 +52,7 @@ function fakeHost(opts: {
 			relayStatus: () => (opts.ownAddrs?.length ? 'reserved' : 'none'),
 			onReachabilityChange: () => () => {},
 		},
+		...opts.host,
 	};
 }
 
@@ -117,5 +124,116 @@ describe('connected cadrons', () => {
 		control.dispatchEvent(new Event('peer:connect'));
 		await new Promise(r => setTimeout(r, 80));
 		expect(calls).toBe(1);
+	});
+});
+
+describe('removing a cadron', () => {
+	const removal = {
+		removeMachine: async () => ({
+			removedPeer: true, removedDeviceToken: false, withdrawnInvitations: ['i1', 'i2'],
+			strands: [{ strandId: 's1', outcome: 'rotated' }, { strandId: 's2', outcome: 'pending' }],
+		}),
+		planMachineRemoval: async () => ({
+			machine: server, refusal: null, invitations: ['i1', 'i2'],
+			strands: [{ strandId: 's1', rotation: 'here' }],
+		}),
+	};
+
+	it('removes it completely (removeMachine, not removePeer) and says what that did', async () => {
+		const client = createCadreClient(fakeHost({ machines: [server], extra: removal }));
+		expect(await client.cadre.removeMachine('server')).toEqual({
+			ok: true,
+			value: { withdrawnInvitations: 2, closedStrands: [{ strandId: 's1', outcome: 'rotated' }, { strandId: 's2', outcome: 'pending' }] },
+		});
+	});
+
+	it('plans the removal for the confirmation', async () => {
+		const client = createCadreClient(fakeHost({ extra: removal }));
+		expect(await client.cadre.planRemoval('server')).toEqual({
+			ok: true,
+			value: { refusal: null, alreadyRemoved: false, invitations: 2, closedStrands: [{ strandId: 's1', replaced: 'here' }] },
+		});
+	});
+
+	it('turns a refusal into removal-refused with its reason', async () => {
+		const client = createCadreClient(fakeHost({
+			extra: { removeMachine: async () => { throw new MachineRemovalRefusedError('self', 'self'); } },
+		}));
+		const r = await client.cadre.removeMachine('self');
+		expect(r.ok ? null : [r.error.kind, r.error.reason]).toEqual(['removal-refused', 'self']);
+	});
+
+	it('reports a removal made here, and one found when the list is read again', async () => {
+		const machines: Machine[] = [server, { ...server, peerId: 'other' }];
+		let failRead = false;
+		const client = createCadreClient(fakeHost({
+			extra: { ...removal, listMachines: () => (failRead ? Promise.reject(new Error('timed out')) : Promise.resolve([...machines])) },
+		}));
+		const removed: string[] = [];
+		client.changes.removed(id => removed.push(id));
+		await client.cadre.status();
+		await client.cadre.removeMachine('server');
+		machines.shift();
+		await client.cadre.status();
+		failRead = true;
+		await client.cadre.status(); // incomplete: compares nothing
+		failRead = false;
+		machines.length = 0; // 'other' removed on another device
+		await client.cadre.status();
+		expect(removed).toEqual(['server', 'other']);
+	});
+});
+
+describe('adding a node by its address', () => {
+	const ADDR = '/dns4/node.example.com/tcp/443/wss/p2p/12D3KooWHA9QDCHrzvezCn4oHuqUfDgdwwQaRdn7bMAyenKmofdM';
+	const seeding = (accepted: boolean) => ({
+		addDrone: async () => ({ seed: { s: 1 }, encodedSeed: 'seed-text' }),
+		deliverSeed: async () => (accepted ? { accepted: true } : { accepted: false, reason: 'not listening' }),
+		reconcileControlCohort: async () => {},
+	});
+
+	it('authorizes the node and delivers the seed', async () => {
+		const client = createCadreClient(fakeHost({ extra: seeding(true) }));
+		expect(await client.cadre.connectNode(ADDR)).toEqual({ ok: true, value: { peerId: '12D3KooWHA9QDCHrzvezCn4oHuqUfDgdwwQaRdn7bMAyenKmofdM', delivered: true } });
+	});
+
+	it('hands back the seed when the node does not take it over the network', async () => {
+		const client = createCadreClient(fakeHost({ extra: seeding(false) }));
+		const r = await client.cadre.connectNode(ADDR);
+		expect(r.ok && r.value).toMatchObject({ delivered: false, reason: 'not listening', seed: 'seed-text' });
+	});
+
+	it('refuses an address that names no node', async () => {
+		const client = createCadreClient(fakeHost({ extra: seeding(true) }));
+		const bad = await client.cadre.connectNode('/dns4/node.example.com/tcp/443/wss');
+		const junk = await client.cadre.connectNode('not an address');
+		expect([bad, junk].map(r => (r.ok ? null : [r.error.kind, r.error.reason]))).toEqual([['invalid-address', 'no-peer-id'], ['invalid-address', 'unparsable']]);
+	});
+});
+
+describe('the claim preview and the owner key', () => {
+	const CODE_NODE = { getOwnerSigner: () => ({ publicKey: 'OwnerKeyPublicHalf' }) };
+
+	it('names the cadre the node would join and the owner fingerprint it will show', async () => {
+		const { encodeNodeClaimPayload } = await import('@serfab/cadre-core');
+		const peerId = '12D3KooWHA9QDCHrzvezCn4oHuqUfDgdwwQaRdn7bMAyenKmofdM';
+		const code = encodeNodeClaimPayload({ peerId, multiaddrs: [`/dns4/n.example.com/tcp/443/wss/p2p/${peerId}`], secret: randomBytes(32).toString('base64url') });
+		const client = createCadreClient(fakeHost({ extra: CODE_NODE }));
+		const r = await client.cadre.inspectNodeCode(code);
+		expect(r.ok && { partyId: r.value.partyId, ownerFingerprint: r.value.ownerFingerprint }).toEqual({ partyId: 'party', ownerFingerprint: 'OwnerKey' });
+	});
+
+	it("exports through the host's own hook when it has one", async () => {
+		const client = createCadreClient(fakeHost({ host: { exportOwnerKey: async () => 'private-half' } }));
+		expect(await client.cadre.exportOwnerKey()).toEqual({ ok: true, value: 'private-half' });
+	});
+});
+
+describe('cadron preferences', () => {
+	it('are stored with their format version', async () => {
+		let saved = '';
+		const client = createCadreClient(fakeHost({ host: { preferences: { load: async () => undefined, save: async t => { saved = t; } } } }));
+		await client.invitations.setPreferences({ maxAddrs: 3 });
+		expect(JSON.parse(saved)).toMatchObject({ format: 1, maxAddrs: 3 });
 	});
 });

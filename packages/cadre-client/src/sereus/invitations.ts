@@ -18,7 +18,7 @@
  */
 import { multiaddr } from '@multiformats/multiaddr';
 import type { CadreNode } from '@serfab/cadre-core';
-import { normalizePreferences, planBootstrap, type CadronCandidate, type CadronPreferences } from '../bootstrap.js';
+import { CADRON_PREFERENCES_FORMAT, normalizePreferences, planBootstrap, type CadronCandidate, type CadronPreferences } from '../bootstrap.js';
 import { describeInvitation } from '../invitation-text.js';
 import type { InvitationReadiness, InvitationsModel } from '../model.js';
 import { cadreAttempt, CadreFailure, withTimeout } from '../result.js';
@@ -129,7 +129,7 @@ export function createInvitations({ host, controlReadMs, log }: InvitationsDeps)
 
 		setPreferences: changes => cadreAttempt(async () => {
 			const next = normalizePreferences({ ...(await loadPrefs()), ...changes });
-			if (host.preferences) await host.preferences.save(JSON.stringify(next));
+			if (host.preferences) await host.preferences.save(JSON.stringify({ format: CADRON_PREFERENCES_FORMAT, ...next }));
 			prefs = next;
 			changed();
 			return next;

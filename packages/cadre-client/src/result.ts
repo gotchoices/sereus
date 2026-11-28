@@ -22,6 +22,10 @@ export type CadreErrorKind =
 	| 'claim-refused'
 	/** Claiming a node: reached, then the exchange or a local step failed. Safe to repeat. `reason` `busy`: a claim is already running. */
 	| 'claim-failed'
+	/** Removing a cadron was refused. `reason`: `not-an-owner` (this device holds no owner key) or `self` (it is this device). */
+	| 'removal-refused'
+	/** An address that cannot be used: unparsable, or not ending in `/p2p/<peerId>`. */
+	| 'invalid-address'
 	/** This device cannot do that (no owner key held here, say). */
 	| 'not-supported'
 	/** Anything else. */
@@ -29,7 +33,8 @@ export type CadreErrorKind =
 
 const KINDS: Record<CadreErrorKind, true> = {
 	'unreachable': true, 'unavailable': true, 'invalid-node-code': true, 'node-unreachable': true,
-	'claim-refused': true, 'claim-failed': true, 'not-supported': true, 'unexpected': true,
+	'claim-refused': true, 'claim-failed': true, 'removal-refused': true, 'invalid-address': true, 'not-supported': true,
+	'unexpected': true,
 };
 /** Every kind, for catalogs and tools that must cover them all. */
 export const CADRE_ERROR_KINDS = Object.keys(KINDS) as readonly CadreErrorKind[];

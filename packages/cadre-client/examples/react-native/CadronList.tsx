@@ -49,10 +49,27 @@ export function CadronList({ client }: { client: CadreClient }) {
 			: [...prefs.preferred, m.peerId];
 		void client.invitations.setPreferences({ preferred });
 	};
-	const remove = (m: CadreMachine) => Alert.alert('Remove this machine?', 'It will no longer act for you.', [
-		{ text: 'Cancel', style: 'cancel' },
-		{ text: 'Remove', style: 'destructive', onPress: () => { void client.cadre.removeMachine(m.peerId); } },
-	]);
+	// Confirm with what the removal will do, then remove completely (record, invitations, closed-strand keys).
+	const remove = async (m: CadreMachine) => {
+		const plan = await client.cadre.planRemoval(m.peerId);
+		if (!plan.ok) { Alert.alert('Cannot check this removal', plan.error.message); return; }
+		if (plan.value.refusal) { Alert.alert('This machine cannot be removed here', plan.value.refusal === 'self' ? 'It is this device.' : 'This device holds no owner key.'); return; }
+		const also = [
+			plan.value.invitations ? `${plan.value.invitations} invitation(s) it could rejoin with are closed` : null,
+			plan.value.closedStrands.length ? `${plan.value.closedStrands.length} private conversation(s) get a new key it cannot read` : null,
+		].filter(Boolean).join('; ');
+		Alert.alert('Remove this machine?', `It will no longer act for you.${also ? `\n\nAlso: ${also}.` : ''}`, [
+			{ text: 'Cancel', style: 'cancel' },
+			{
+				text: 'Remove',
+				style: 'destructive',
+				onPress: async () => {
+					const done = await client.cadre.removeMachine(m.peerId);
+					if (!done.ok) Alert.alert('Could not remove the machine', done.error.message);
+				},
+			},
+		]);
+	};
 
 	return (
 		<View style={styles.list}>
@@ -71,7 +88,7 @@ export function CadronList({ client }: { client: CadreClient }) {
 							)}
 						</View>
 						{!m.thisDevice && <Pressable onPress={() => toggleStar(m)}><Text>{m.preferred ? '★' : '☆'}</Text></Pressable>}
-						{!m.thisDevice && <Pressable onPress={() => remove(m)}><Text style={styles.danger}>Remove</Text></Pressable>}
+						{!m.thisDevice && <Pressable onPress={() => { void remove(m); }}><Text style={styles.danger}>Remove</Text></Pressable>}
 					</View>
 				);
 			})}

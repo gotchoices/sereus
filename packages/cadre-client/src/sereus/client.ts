@@ -20,15 +20,16 @@
  * an outsider may complete the join and still not sync. A machine with a public address
  * and open ports (a server, a rented node) is the case this is for.
  */
-import { readOwnerPrivateKey, type CadreNode } from '@serfab/cadre-core';
+import { MachineRemovalRefusedError, readOwnerPrivateKey, type CadreNode } from '@serfab/cadre-core';
 import type {
 	CadreMachine, CadreModel, CadreStatus, CadreView, InvitationsModel, InvitationsView, Reachability, ReachabilityModel, ReachabilityView,
 	ReachedVia, RelaysModel,
 } from '../model.js';
 import { ownerFingerprint } from '../model.js';
-import { nodeReach } from '../address.js';
+import { addressComponents, nodeReach } from '../address.js';
+import { destinationPeerId } from '../invitation-text.js';
 import {
-	cadreAttempt, CadreFailure, cadreFail, cadreOk, withTimeout, type CadreResult,
+	cadreAttempt, CadreFailure, cadreFail, cadreOk, describeThrown, withTimeout, type CadreResult,
 } from '../result.js';
 import { classifyClaimFailure, readNodeCode } from './node-code.js';
 import type { CadreHost } from './host.js';
@@ -45,6 +46,8 @@ export interface CadreClientOptions {
 	ownMachineTtlMs?: number;
 	/** A burst of cadrons connecting or dropping is reported once, this long after the last. Default 750 ms. */
 	peerChangeMs?: number;
+	/** Bound on a removal, which also replaces the party's key in each closed strand. Default 60 s. */
+	removeTimeoutMs?: number;
 	/** Where the client reports (claims by peer id only; never a code). Default `console`. */
 	log?: { info(...args: unknown[]): void; warn(...args: unknown[]): void };
 }
@@ -58,6 +61,12 @@ export interface CadreClient extends CadreView, ReachabilityView, InvitationsVie
 	changes: {
 		/** Cadron preferences changed, or a cadron came to hold a strand (readiness). */
 		invitations(onChange: () => void): () => void;
+		/**
+		 * A cadron left the cadre: removed through this client, or found gone when the machine list is
+		 * read again (a removal on another device; seen only while something reads the list, such as a
+		 * subscribed `cadreStore`). For per-cadron state an app keeps, such as saved addresses.
+		 */
+		removed(onRemoved: (peerId: string) => void): () => void;
 		/** The control network connected or dropped: the machine list may have changed. */
 		cadre(onChange: () => void): () => void;
 		/** This device's addresses changed, its node restarted, or the control network connected or dropped. */
@@ -76,6 +85,11 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 	const controlOpMs = opts.controlOpMs ?? 15_000;
 	const ownMachineTtlMs = opts.ownMachineTtlMs ?? 15_000;
 	const peerChangeMs = opts.peerChangeMs ?? 750;
+	const removeTimeoutMs = opts.removeTimeoutMs ?? 60_000;
+	// Cadrons removed: by this client, or seen gone between two complete reads of the list.
+	const removedListeners = new Set<(peerId: string) => void>();
+	const announceRemoved = (peerId: string) => { for (const l of [...removedListeners]) l(peerId); };
+	let knownCadrons: Set<string> | null = null;
 	const log = opts.log ?? console;
 	let claiming = false;
 	let ownMachine: { node: CadreNode; at: number; answers: boolean } | null = null;
@@ -134,11 +148,13 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 			const machines: CadreMachine[] = peerId
 				? [{ peerId, thisDevice: true, addresses: [], alwaysOn: null, lastSeenAt: null, connected: node?.running === true }]
 				: [];
+			let complete = true;
 			if (node) {
 				// Best effort and bounded: the list fills in when the control network answers.
+				const partial = <T>(): T[] => { complete = false; return []; };
 				const [members, records] = await Promise.all([
-					withTimeout(node.listMembers(), controlReadMs, 'listMembers').catch(() => []),
-					withTimeout(node.listMachines(), controlReadMs, 'listMachines').catch(() => []),
+					withTimeout(node.listMembers(), controlReadMs, 'listMembers').catch(() => partial<Awaited<ReturnType<CadreNode['listMembers']>>[number]>()),
+					withTimeout(node.listMachines(), controlReadMs, 'listMachines').catch(() => partial<Awaited<ReturnType<CadreNode['listMachines']>>[number]>()),
 				]);
 				const record = new Map(records.map(r => [r.peerId, r]));
 				// Who this device holds a control connection to now.
@@ -166,6 +182,13 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 					});
 				}
 			}
+			// A cadron gone between two complete reads was removed (here or by another device). A read
+			// that timed out is incomplete and compares nothing.
+			if (node && complete) {
+				const now = new Set(machines.filter(m => !m.thisDevice).map(m => m.peerId));
+				if (knownCadrons) for (const gone of knownCadrons) if (!now.has(gone)) announceRemoved(gone);
+				knownCadrons = now;
+			}
 			// The person's own names and preferred cadrons.
 			const { names, preferred } = await invitations.preferences();
 			for (const m of machines) {
@@ -191,7 +214,12 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 				{ reason: reading.problem });
 			}
 			const { peerId, multiaddrs } = reading.payload;
-			return cadreOk({ peerId, addresses: multiaddrs, reach: nodeReach(multiaddrs) });
+			const ownerKey = host.node.node?.getOwnerSigner()?.publicKey;
+			return cadreOk({
+				peerId, addresses: multiaddrs, reach: nodeReach(multiaddrs),
+				partyId: host.node.partyId(),
+				ownerFingerprint: host.node.ownerEnrolled() && ownerKey ? ownerFingerprint(ownerKey) : null,
+			});
 		},
 
 		async claimNode(text) {
@@ -232,14 +260,75 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 			}
 		},
 
-		removeMachine: peerId => cadreAttempt(async () => {
-			await withTimeout(requireNode().removePeer(peerId), controlOpMs, 'removePeer');
+		connectNode: address => cadreAttempt(async () => {
+			const node = requireNode();
+			const target = address.trim();
+			if (!addressComponents(target)) throw new CadreFailure('invalid-address', 'That is not an address.', { reason: 'unparsable' });
+			const peerId = destinationPeerId(target);
+			if (!peerId) throw new CadreFailure('invalid-address', 'The address must end in /p2p/<peer id>, so the node can be identified.', { reason: 'no-peer-id' });
+			if (!host.node.ownerEnrolled()) throw new CadreFailure('not-supported', 'This device holds no owner key, so it cannot add a node.');
+			// Authorizes (an owner-signed record) and mints the seed; dials nothing itself.
+			const { seed, encodedSeed } = await withTimeout(node.addDrone({ dronePeerId: peerId, droneMultiaddrs: [target] }), controlOpMs, 'addDrone');
+			log.info('[cadre-client] node authorized:', peerId);
+			let delivered = false;
+			let reason: string | undefined;
+			try {
+				const ack = await withTimeout(node.deliverSeed(target, seed), controlOpMs, 'deliverSeed');
+				delivered = ack.accepted;
+				reason = ack.accepted ? undefined : ack.code ?? ack.reason;
+			} catch (err) {
+				reason = describeThrown(err);
+			}
+			// The connection: now rather than at the next timed pass.
+			await withTimeout(node.reconcileControlCohort(), controlOpMs, 'reconcileControlCohort').catch(() => undefined);
 			ownMachine = null;
+			return { peerId, delivered, ...(reason ? { reason } : {}), ...(delivered ? {} : { seed: encodedSeed }) };
+		}),
+
+		createSeed: () => cadreAttempt(async () => {
+			const node = requireNode();
+			if (!host.node.ownerEnrolled()) throw new CadreFailure('not-supported', 'This device holds no owner key, so it cannot make a seed.');
+			return node.encodeSeed(await withTimeout(node.createSeed(), controlOpMs, 'createSeed'));
+		}),
+
+		planRemoval: peerId => cadreAttempt(async () => {
+			const plan = await withTimeout(requireNode().planMachineRemoval(peerId), controlReadMs, 'planMachineRemoval');
+			return {
+				refusal: plan.refusal,
+				alreadyRemoved: plan.machine === null,
+				invitations: plan.invitations.length,
+				closedStrands: plan.strands.map(s => ({ strandId: s.strandId, replaced: s.rotation })),
+			};
+		}),
+
+		removeMachine: peerId => cadreAttempt(async () => {
+			let result;
+			try {
+				// The complete removal: record, invitations, the party's key in each closed strand.
+				result = await withTimeout(requireNode().removeMachine(peerId), removeTimeoutMs, 'removeMachine');
+			} catch (err) {
+				if (err instanceof MachineRemovalRefusedError) {
+					throw new CadreFailure('removal-refused', err.code === 'self'
+						? 'This is this device: to leave the cadre, stop the app and delete its data.'
+						: 'This device holds no owner key, so it cannot remove a machine.', { reason: err.code });
+				}
+				throw err;
+			}
+			ownMachine = null;
+			knownCadrons?.delete(peerId);
+			announceRemoved(peerId);
+			return {
+				withdrawnInvitations: result.withdrawnInvitations.length,
+				closedStrands: result.strands.map(s => ({ strandId: s.strandId, outcome: s.outcome })),
+			};
 		}),
 
 		exportOwnerKey: () => cadreAttempt(async () => {
-			// The owner key lives in the host's key store (its owner slot), not in the node.
-			const key = host.ownerKeyStore ? await readOwnerPrivateKey(host.ownerKeyStore) : undefined;
+			// The host's own export (an app keeping the owner key its own way), else the key store's
+			// owner slot (the kits').
+			const key = host.exportOwnerKey
+				? await host.exportOwnerKey()
+				: host.ownerKeyStore ? await readOwnerPrivateKey(host.ownerKeyStore) : undefined;
 			if (!key) throw new CadreFailure('not-supported', 'This device holds no owner key to export.');
 			return key;
 		}),
@@ -308,6 +397,10 @@ export function createCadreClient(host: CadreHost, opts: CadreClientOptions = {}
 				return () => { offControl(); offPeers(); offPrefs(); };
 			},
 			invitations: onInvitations,
+			removed(onRemoved) {
+				removedListeners.add(onRemoved);
+				return () => { removedListeners.delete(onRemoved); };
+			},
 			reachability(onChange) {
 				const offAddrs = host.node.onReachabilityChange(onChange);
 				const offControl = onControl(() => { ownMachine = null; onChange(); });

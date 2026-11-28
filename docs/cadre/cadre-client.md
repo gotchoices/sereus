@@ -15,6 +15,34 @@ the [package README](../../packages/cadre-client/README.md); this page is the mo
 Every operation returns a result with a stable error `kind` rather than throwing, and each piece of
 screen state comes as a store that any UI framework binds to.
 
+## Adding a cadron
+
+Three ways, for three kinds of node ([Adding and removing machines](membership.md)):
+
+- **By its node code** (`inspectNodeCode`, then `claimNode`): a node waiting to be claimed (cadre-host,
+  a provider container, `cadre init`). The preview names the peer, whether it can be reached from
+  anywhere, this device's network id and owner fingerprint, so the person checks it joins the
+  right cadre before approving. A code can come from anyone, so nothing is claimed without approval.
+- **By its address** (`connectNode`): a node started to listen for seeds. The client authorizes it
+  (an owner-signed record) and delivers the seed; when the node does not take the seed over the
+  network, the result carries it for delivery another way.
+- **By a seed alone** (`createSeed`): for a node not created yet. A seed carries addresses and
+  authorizes nothing, so the node is added by address or claim once it exists.
+
+A code arriving while the screen is not ready, or while a claim runs, waits in a `nodeCodeInbox`:
+one slot, the latest arrival kept. Listening for the links is the platform's.
+
+## Removing a cadron
+
+`removeMachine` is cadre-core's complete removal ([Removing a machine](removing-machines.md)): the
+cadron's record, the invitations it could come back through, and the party's key in each closed
+strand, so it reads nothing new there. It is refused for this device itself and on a device with no
+owner key. `planRemoval` says beforehand what it will do, for an honest confirmation.
+
+`changes.removed` reports a cadron leaving: removed through this client, or found gone when the
+machine list is read again (a removal on another device). Comparing needs two complete reads, so a
+read that timed out reports nothing.
+
 ## Reachability
 
 A phone cannot accept connections, so on its own it can be reached only through a relay
@@ -80,13 +108,24 @@ cadron serves it.
 ### Preferences
 
 The person's preferred cadrons, their own names for them, the cap, and the choices about this
-device and private addresses are kept on the device, in the host's `preferences` slot.
+device and private addresses are kept on the device, in the host's `preferences` slot. The app
+keeps the text opaque: it carries its own format version, and a later format is migrated inside
+the package.
 
 ### The readable invitation
 
 `describe` turns an encoded invitation into one line per address (the cadron's name or short peer
 id, the address kind, host and port), the expiry, the link's length and the smallest QR version
 that holds it.
+
+## What re-reads a store
+
+`cadreStore` re-reads on every change that has an event: this node starting or stopping, a cadron
+connecting or dropping, the cadron preferences. Two changes have none, and a poll (30 s by default,
+`pollMs`) catches them: a cadron added or removed on another device, which arrives by control
+replication, and a cadron's record ageing, which turns its presence from recent to quiet.
+`reachabilityStore` re-reads when this device's addresses change and polls for a cadron of the
+party coming up or going quiet.
 
 ## Limits and accepted tradeoffs
 

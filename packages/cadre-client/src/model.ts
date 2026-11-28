@@ -63,6 +63,48 @@ export type NodeCodePreview = {
 	peerId: string;
 	addresses: string[];
 	reach: NodeReach;
+	/** The cadre it would join: this device's network id, for the approval prompt. Null before the node starts. */
+	partyId: string | null;
+	/** This device's owner key fingerprint, which the node shows as its owner once it joins. Null when none is enrolled. */
+	ownerFingerprint: string | null;
+};
+
+/** What removing a cadron would do, for the confirmation (`CadreModel.planRemoval`). */
+export type RemovalPlan = {
+	/** Why it would be refused, or null: `not-an-owner` (no owner key here), `self` (this device). */
+	refusal: 'not-an-owner' | 'self' | null;
+	/** No live record names it here: already removed. */
+	alreadyRemoved: boolean;
+	/** Invitations it could come back through, which the removal withdraws. */
+	invitations: number;
+	/**
+	 * Each closed strand the party holds a key for, where that key is replaced so the removed cadron
+	 * reads nothing new there: `here` (by this removal), `later` (by a machine that runs the strand),
+	 * `another-party` (the strand's host must re-invite the party).
+	 */
+	closedStrands: Array<{ strandId: string; replaced: 'here' | 'later' | 'another-party' }>;
+};
+
+/** What a removal did (`CadreModel.removeMachine`). */
+export type RemovalOutcome = {
+	/** Invitations withdrawn, which the removed cadron could have come back through. */
+	withdrawnInvitations: number;
+	/** Per closed strand: `rotated` (done), `pending` (finishes on a machine that runs it), `needs-another-party`. */
+	closedStrands: Array<{ strandId: string; outcome: 'rotated' | 'pending' | 'needs-another-party' }>;
+};
+
+/** What connecting to a node by its address did (`CadreModel.connectNode`). */
+export type ConnectNodeOutcome = {
+	peerId: string;
+	/** The node took the seed over the network. */
+	delivered: boolean;
+	/** Why it did not (the node's refusal, or no answer), when not delivered. */
+	reason?: string;
+	/**
+	 * When not delivered: the seed to hand the node another way (`cadre start --seed …`). The node is
+	 * already authorized either way. Not a secret, but there is no reason to log it.
+	 */
+	seed?: string;
 };
 
 export interface CadreModel {
@@ -76,8 +118,27 @@ export interface CadreModel {
 	 * says whether the same code can still work) or `claim-failed`.
 	 */
 	claimNode(text: string): Promise<CadreResult<void>>;
-	/** Take a machine out of the cadre. */
-	removeMachine(peerId: string): Promise<CadreResult<void>>;
+	/**
+	 * Add a node by its address (`/…/p2p/<peerId>`), for a node started to listen for seeds: authorize
+	 * it (an owner-signed record), then deliver the seed. When the node does not take it over the
+	 * network, the outcome carries the seed to deliver another way. Fails `invalid-address`,
+	 * `unavailable`, or `not-supported` with no owner key here.
+	 */
+	connectNode(address: string): Promise<CadreResult<ConnectNodeOutcome>>;
+	/**
+	 * A seed for a node not created yet (a provider-hosted node made from it), as text. It carries the
+	 * cadre's addresses but does NOT authorize anything: once the node exists, add it with
+	 * `connectNode` or a claim, or its traffic is refused.
+	 */
+	createSeed(): Promise<CadreResult<string>>;
+	/** What removing a cadron would do: for the confirmation ("this also closes 2 invitations"). */
+	planRemoval(peerId: string): Promise<CadreResult<RemovalPlan>>;
+	/**
+	 * Take a cadron out of the cadre completely: its record, the invitations it could come back
+	 * through, and the party's key in each closed strand (so it reads nothing new there). Fails
+	 * `removal-refused` with `reason` `not-an-owner` or `self`.
+	 */
+	removeMachine(peerId: string): Promise<CadreResult<RemovalOutcome>>;
 	/**
 	 * The owner key's private half, for an offline backup. It is the secret that controls
 	 * the cadre: only behind an explicit, confirmed action, and never logged.

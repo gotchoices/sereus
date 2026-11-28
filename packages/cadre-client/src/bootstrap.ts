@@ -58,6 +58,11 @@ export const DEFAULT_CADRON_PREFERENCES: CadronPreferences = {
 	preferred: [], names: {}, maxAddrs: 2, thisDevice: 'fallback', allowPrivate: false,
 };
 export const MAX_BOOTSTRAP_ADDRS = 8;
+/**
+ * The stored form's version (`format` beside the fields). The app keeps the text opaque; a later
+ * format is read and migrated here, and a field this version does not know is dropped.
+ */
+export const CADRON_PREFERENCES_FORMAT = 1;
 
 /** Preferences as stored, made whole and in range (missing fields defaulted, ids deduplicated). */
 export function normalizePreferences(raw: Partial<CadronPreferences> | null | undefined): CadronPreferences {
