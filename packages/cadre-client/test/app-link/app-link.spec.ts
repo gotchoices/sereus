@@ -1,11 +1,9 @@
-import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import type { DurableSlot } from '@serfab/cadre-core';
 import { CADRE_INVITATION_PREFIX } from '@serfab/cadre-core';
 
 import {
 	encodeCadreJoinResponse,
-	KNOWN_SEREUS_APPS,
 	LINK_REQUEST_TTL_MS,
 	LinkRequestStore,
 	parseCadreLink,
@@ -85,12 +83,5 @@ describe('LinkRequestStore', () => {
 		now += LINK_REQUEST_TTL_MS + 1;
 		await expect(store.take(encodeCadreJoinResponse({ ...refusal, nonce: open.nonce }))).rejects.toThrow(UnsolicitedJoinResponseError);
 		expect((await store.begin(null)).nonce).not.toBe(open.nonce);
-	});
-});
-
-describe('config plugin', () => {
-	it('lists the same known apps as the kit, since the CommonJS plugin keeps its own copy', () => {
-		const plugin = createRequire(import.meta.url)('../../app.plugin.cjs') as { KNOWN_SEREUS_APPS: unknown };
-		expect(plugin.KNOWN_SEREUS_APPS).toEqual(KNOWN_SEREUS_APPS);
 	});
 });

@@ -5,12 +5,29 @@ machines of their cadre), claiming a node by its code, removing one, backing up 
 relays, whether anybody can reach this device, and which cadrons an invitation names. Usage is in
 the [package README](../../packages/cadre-client/README.md); this page is the model behind it.
 
-## Two entry points
+## Entry points
 
 - **`@serfab/cadre-client`** loads no cadre-core code: types, results, stores, node-code text and
   address judgement. A screen or a mock imports it freely.
 - **`@serfab/cadre-client/sereus`** works over a running node. The app builds and owns the node and
   hands the client a small host (`CadreHost`); `edgeNodeHost` adapts an edge node.
+- **`@serfab/cadre-client/app-link`**: apps on one device handing a join request and its answer to
+  each other by link, and recommending an app ([Between apps on one phone](apps.md#between-apps-on-one-phone)).
+- **`@serfab/cadre-client/lifecycle`**: the background runner ([Strand hibernation and wake](../strands/hibernation.md)).
+
+## Where it sits
+
+cadre-client and the platform kits each build on cadre-core; neither builds on the other. The app
+joins them: a kit builds the node (`createPhoneNode` on React Native, cadre-core's `createEdgeNode`
+on the web and NativeScript), and the client manages it through an `EdgeNode` or a `CadreHost`.
+
+- **cadre-client** holds the logic every platform shares: cadre management, invitation planning,
+  app links, the background runner. A platform's own pieces are passed in (`canOpenURL`, app-state
+  events, storage slots).
+- **A platform kit** holds only what needs the platform: native crypto, storage, the secure store,
+  polyfills, bundler setup, URL scheme registration, and the adapters that pass these in.
+
+New platform-neutral logic belongs here, not in a kit.
 
 Every operation returns a result with a stable error `kind` rather than throwing, and each piece of
 screen state comes as a store that any UI framework binds to.

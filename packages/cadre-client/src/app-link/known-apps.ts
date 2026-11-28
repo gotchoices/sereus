@@ -51,7 +51,7 @@ export async function installedSereusApps(
 	}));
 	if (unqueryable.length > 0) {
 		console.warn(
-			`[cadre-rn/app-link] canOpenURL refused ${unqueryable.map((entry) => entry.scheme).join(', ')}; ` +
+			`[cadre-client/app-link] canOpenURL refused ${unqueryable.map((entry) => entry.scheme).join(', ')}; ` +
 			'add each to LSApplicationQueriesSchemes (the config plugin\'s appLinks.extraApps does)',
 			unqueryable,
 		);

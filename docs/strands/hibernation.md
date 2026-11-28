@@ -125,7 +125,7 @@ A mobile app cannot rely on timers, because the operating system suspends it. `C
 
 On an edge node the timers are off, so the only activity a `serviceWake` window sees is a `wakeStrand` call, a wake request from another machine, or a first sync completing. A read, a write, `recordStrandActivity` or the offline queue sending during the window does not keep the strand up.
 
-`@serfab/cadre-rn/lifecycle` provides a `BackgroundRunner` (`createBackgroundRunner` in `packages/cadre-rn/src/lifecycle/background-runner.ts`). It calls `hibernateAll` when the app goes to the background. When the app returns to the foreground it starts the node again if the operating system stopped it and waits a bounded time for the control network. It does not wake the strands it hibernated: the app calls `wakeStrand` for each strand it needs.
+`@serfab/cadre-client/lifecycle` provides a `BackgroundRunner` (`createBackgroundRunner` in `packages/cadre-client/src/lifecycle/background-runner.ts`), platform-neutral over the app's app-state events; `@serfab/cadre-rn/lifecycle` adds its hooks over a phone node. It calls `hibernateAll` when the app goes to the background. When the app returns to the foreground it starts the node again if the operating system stopped it and waits a bounded time for the control network. It does not wake the strands it hibernated: the app calls `wakeStrand` for each strand it needs.
 
 ## Push wake
 

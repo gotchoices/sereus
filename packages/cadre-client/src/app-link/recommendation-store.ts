@@ -110,12 +110,12 @@ function parseRecommendations(text: string): AppRecommendation[] {
 	try {
 		parsed = JSON.parse(text);
 	} catch (err) {
-		console.warn('[cadre-rn/app-link] the app recommendation record is not JSON; reading it as none:', err);
+		console.warn('[cadre-client/app-link] the app recommendation record is not JSON; reading it as none:', err);
 		return [];
 	}
 	const entries = Array.isArray(parsed) ? parsed.map(parseRecommendation) : null;
 	if (!entries?.every((entry): entry is AppRecommendation => entry !== null)) {
-		console.warn('[cadre-rn/app-link] the app recommendation record has the wrong shape; reading it as none:', text);
+		console.warn('[cadre-client/app-link] the app recommendation record has the wrong shape; reading it as none:', text);
 		return [];
 	}
 	return entries;

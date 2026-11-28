@@ -22,8 +22,8 @@ React Native links native code only for an app's own direct dependencies, so the
 | `/polyfills/webrtc` | `react-native-webrtc` (`^124.0.6`), and `@libp2p/webrtc` for the transport |
 | `/polyfills/native-crypto`, `/noise-crypto` | `react-native-quick-crypto` (`^1.1.7`), `react-native-nitro-modules` (`>=0.31.2`), `react-native-quick-base64` (`>=3.0.0`) |
 | `/phone-node` | `@serfab/cadre-core`, `rn-leveldb`, and a secure-store module (`expo-secure-store`, or the bare app's own) |
-| `/lifecycle`, `/node-local`, `/key-store` | `@serfab/cadre-core`; the secure-store module for the last two |
-| `/app-link` | `@serfab/cadre-core`, and the config plugin's `appLinks` option |
+| `/lifecycle`, `/node-local`, `/key-store` | `@serfab/cadre-core` (and `@serfab/cadre-client` for `/lifecycle`); the secure-store module for the last two |
+| `/app-link` (deprecated: re-exports `@serfab/cadre-client/app-link`) | `@serfab/cadre-client`, and the config plugin's `appLinks` option |
 | `/provider` | `@serfab/cadre-core`, and `expo-web-browser` or the bare app's own in-app browser |
 | `/boot-check` | Nothing beyond `react-native` |
 | `/metro`, the config plugin | Nothing |
@@ -83,8 +83,8 @@ After a native rebuild, a first launch ends with `phone.status.state` at `runnin
 | Import | What it provides |
 |---|---|
 | `@serfab/cadre-rn/phone-node` | `createPhoneNode(platform)`, `attachStrandWhenWritable`, `retryAfterRestart` |
-| `@serfab/cadre-rn/lifecycle` | `createBackgroundRunner`, `phoneNodeLifecycle(phone)` |
-| `@serfab/cadre-rn/app-link` | Link builders and parser, the response codec, `installedSereusApps`, `LinkRequestStore`, `AppRecommendationStore` |
+| `@serfab/cadre-rn/lifecycle` | `phoneNodeLifecycle(phone)`; `createBackgroundRunner` re-exported from `@serfab/cadre-client/lifecycle` (deprecated here) |
+| `@serfab/cadre-rn/app-link` | Deprecated: re-exports `@serfab/cadre-client/app-link` (link builders and parser, the response codec, `installedSereusApps`, `LinkRequestStore`, `AppRecommendationStore`) |
 | `@serfab/cadre-rn/provider` | `signInWithProvider`, `providerTokensSlot`, `rentalStore` |
 | `@serfab/cadre-rn/key-store` | `SecureStoreKeyStore`: cadre-core's `KeyStore` over the platform secure store |
 | `@serfab/cadre-rn/node-local` | `secureStoreSlot`, `kvStoreSlot` and the record keys, for cadre-core's node-local stores |
@@ -261,11 +261,12 @@ A phone removed while its app was not running never receives the report, and kee
 
 ## Lifecycle
 
-`createBackgroundRunner` (`@serfab/cadre-rn/lifecycle`) follows React Native's `AppState`.
+`createBackgroundRunner` (`@serfab/cadre-client/lifecycle`, platform-neutral) follows React Native's `AppState`, with the kit's hooks over the phone node.
 
 ```ts
 import { AppState } from 'react-native';
-import { createBackgroundRunner, phoneNodeLifecycle } from '@serfab/cadre-rn/lifecycle';
+import { createBackgroundRunner } from '@serfab/cadre-client/lifecycle';
+import { phoneNodeLifecycle } from '@serfab/cadre-rn/lifecycle';
 
 const runner = createBackgroundRunner({ ...phoneNodeLifecycle(phone), appState: AppState });
 runner.onStateChange(() => render(runner.state, runner.resuming, runner.degraded));
@@ -282,14 +283,14 @@ The runner never imports `react-native`: `AppState` is assignable to its `AppSta
 
 ## App links
 
-`@serfab/cadre-rn/app-link` lets two Sereus apps on one phone hand a join request and its answer to each other as links, so the user confirms once in the owner app ([Between apps on one phone](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#between-apps-on-one-phone)). The answer is a machine invitation, which admits the asking app as a machine only. An app with strands of its own to bring joins with an owner grant instead (ticket `decide-app-link-join-carries-ownership`).
+`@serfab/cadre-client/app-link` (platform-neutral; this kit registers the URL schemes) lets two Sereus apps on one phone hand a join request and its answer to each other as links, so the user confirms once in the owner app ([Between apps on one phone](https://github.com/gotchoices/sereus/blob/master/docs/cadre/apps.md#between-apps-on-one-phone)). The answer is a machine invitation, which admits the asking app as a machine only. An app with strands of its own to bring joins with an owner grant instead (ticket `decide-app-link-join-carries-ownership`).
 
 The asking app, which wants to join:
 
 ```ts
 import { Linking, Platform } from 'react-native';
 import { decodeCadreInvitation, encodeCadreJoinRequest } from '@serfab/cadre-core';
-import { installedSereusApps, joinRequestLink, KNOWN_SEREUS_APPS, LinkRequestStore, parseCadreLink } from '@serfab/cadre-rn/app-link';
+import { installedSereusApps, joinRequestLink, KNOWN_SEREUS_APPS, LinkRequestStore, parseCadreLink } from '@serfab/cadre-client/app-link';
 
 const store = new LinkRequestStore(phone.linkRequestSlot());   // one per app
 
@@ -313,7 +314,7 @@ The owner app, which answers:
 
 ```ts
 import { decodeCadreJoinRequest, encodeCadreInvitation } from '@serfab/cadre-core';
-import { joinResponseLink, parseCadreLink } from '@serfab/cadre-rn/app-link';
+import { joinResponseLink, parseCadreLink } from '@serfab/cadre-client/app-link';
 
 const link = parseCadreLink(url);
 if (link?.kind === 'join-request') {
@@ -351,7 +352,7 @@ The owner app, which recommends:
 
 ```ts
 import { Linking, Platform } from 'react-native';
-import { AppRecommendationStore, recommendedByLink, storePageLink } from '@serfab/cadre-rn/app-link';
+import { AppRecommendationStore, recommendedByLink, storePageLink } from '@serfab/cadre-client/app-link';
 
 const recommendations = new AppRecommendationStore(phone.recommendationSlot());   // one per app
 
@@ -368,7 +369,7 @@ const approved = request.reply ? await recommendations.take(request.reply.scheme
 The recommended app reads the hint once, at first launch from the Play install referrer (through the app's own install-referrer module) or from a `recommended-by` link:
 
 ```ts
-import { KNOWN_SEREUS_APPS, parseCadreLink, recommendedBySchemeFromReferrer } from '@serfab/cadre-rn/app-link';
+import { KNOWN_SEREUS_APPS, parseCadreLink, recommendedBySchemeFromReferrer } from '@serfab/cadre-client/app-link';
 
 const scheme = recommendedBySchemeFromReferrer(referrer) ?? (link?.kind === 'recommended-by' ? link.text : null);
 const recommender = [...KNOWN_SEREUS_APPS, ...extraApps].find((app) => app.scheme === scheme);

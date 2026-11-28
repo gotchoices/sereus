@@ -17,13 +17,16 @@ import { assertUppercaseDriveLetter } from '../../../test-harness/working-direct
 
 /**
  * Every package this suite runs compiled code from — the `link:` entries of
- * `package.json`'s `dependencies`, and cadre-core, which the phone-node specs start.
+ * `package.json`'s `dependencies`, cadre-core, which the phone-node specs start, and cadre-client,
+ * whose app links and background runner this kit re-exports.
  *
  * Exported so `build-targets.spec.ts` can hold it against this package's actual
  * `dependencies` — a hand-written list rots silently otherwise.
  */
 export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
+	// The re-exported app links and background runner (`/app-link`, `/lifecycle`).
+	{ packageName: '@serfab/cadre-client', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p-storage-rn', distEntry: 'dist/src/index.js', location: 'linked' },
 ];

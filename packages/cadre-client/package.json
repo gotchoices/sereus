@@ -21,6 +21,14 @@
 			"types": "./dist/sereus/index.d.ts",
 			"import": "./dist/sereus/index.js"
 		},
+		"./app-link": {
+			"types": "./dist/app-link/index.d.ts",
+			"import": "./dist/app-link/index.js"
+		},
+		"./lifecycle": {
+			"types": "./dist/lifecycle/index.d.ts",
+			"import": "./dist/lifecycle/index.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"repository": {
@@ -42,7 +50,8 @@
 		"dev:test": "vitest"
 	},
 	"dependencies": {
-		"@multiformats/multiaddr": "^13.0.3"
+		"@multiformats/multiaddr": "^13.0.3",
+		"uint8arrays": "^6.1.1"
 	},
 	"peerDependencies": {
 		"@serfab/cadre-core": "workspace:^"

@@ -112,12 +112,12 @@ function parseOpenLinkRequest(text: string): OpenLinkRequest | null {
 	try {
 		parsed = JSON.parse(text);
 	} catch (err) {
-		console.warn('[cadre-rn/app-link] the open link request record is not JSON; reading it as none:', err);
+		console.warn('[cadre-client/app-link] the open link request record is not JSON; reading it as none:', err);
 		return null;
 	}
 	const { nonce, ownerAppName, startedAtMs } = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as Record<string, unknown>;
 	if (typeof nonce !== 'string' || (ownerAppName !== null && typeof ownerAppName !== 'string') || typeof startedAtMs !== 'number' || !Number.isFinite(startedAtMs)) {
-		console.warn('[cadre-rn/app-link] the open link request record has the wrong shape; reading it as none:', text);
+		console.warn('[cadre-client/app-link] the open link request record has the wrong shape; reading it as none:', text);
 		return null;
 	}
 	return { nonce, ownerAppName, startedAtMs };
@@ -125,5 +125,5 @@ function parseOpenLinkRequest(text: string): OpenLinkRequest | null {
 
 /** 16 random bytes, base64url: the form a join request's `reply.nonce` takes. */
 function newLinkNonce(): string {
-	return uint8ArrayToString(globalThis.crypto.getRandomValues(new Uint8Array(NONCE_BYTES)), 'base64url');
+	return uint8ArrayToString(crypto.getRandomValues(new Uint8Array(NONCE_BYTES)), 'base64url');
 }

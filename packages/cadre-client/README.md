@@ -28,6 +28,12 @@ yarn add @serfab/cadre-client @serfab/cadre-core
   `invitationReadinessStore`, `writable`, `loader`; `cadreStore(view, { pollMs })`).
 - **`@serfab/cadre-client/sereus`** works over a running node: `createCadreClient(host)`,
   `edgeNodeHost(edge, options)`, `readNodeCode`, `classifyClaimFailure`.
+- **`@serfab/cadre-client/app-link`**: two Sereus apps on one device handing a join request and its
+  answer to each other by link, and recommending an app: the link builders and parser, the
+  response codec, `installedSereusApps(canOpenURL)`, `LinkRequestStore`, `AppRecommendationStore`.
+  The platform registers the URL schemes and listens for links (on React Native, `@serfab/cadre-rn`).
+- **`@serfab/cadre-client/lifecycle`**: `createBackgroundRunner`, hibernating the node in the
+  background and resuming it on return, over the platform's app-state events (`AppStateLike`).
 
 ## Using it
 

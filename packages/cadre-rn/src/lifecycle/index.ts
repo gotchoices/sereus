@@ -1,11 +1,17 @@
 /**
- * `@serfab/cadre-rn/lifecycle` — hibernate a phone's node when the app goes to the
- * background and resume it, bounded, when it returns. See the kit README's
+ * `@serfab/cadre-rn/lifecycle` — the background runner's hooks over a `PhoneNode`
+ * (`phoneNodeLifecycle`). The runner is `@serfab/cadre-client/lifecycle`'s. See the kit README's
  * "Lifecycle" section.
  */
+import type { BackgroundRunnerDeps } from '@serfab/cadre-client/lifecycle';
 import type { PhoneNode } from '../phone-node/index.js';
-import type { BackgroundRunnerDeps } from './background-runner.js';
 
+/**
+ * The runner itself is platform-neutral and lives in `@serfab/cadre-client/lifecycle`; it is
+ * re-exported here for apps that import it from the kit.
+ *
+ * @deprecated Import `createBackgroundRunner` and its types from `@serfab/cadre-client/lifecycle`.
+ */
 export {
 	createBackgroundRunner,
 	type AppStateLike,
@@ -14,7 +20,7 @@ export {
 	type BackgroundRunner,
 	type BackgroundRunnerDeps,
 	type RunnerState,
-} from './background-runner.js';
+} from '@serfab/cadre-client/lifecycle';
 
 /**
  * The runner's two node hooks over a `PhoneNode`: the running node, and a cold start

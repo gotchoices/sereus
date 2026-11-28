@@ -46,7 +46,7 @@ Every pass sends the same signed request, so a pass repeated after a lost reply 
 
 ## Between apps on one phone
 
-Two Sereus apps on one phone hand the request and the response to each other by opening each other with a link, so the person confirms once in A and copies nothing. The functions are in the `@serfab/cadre-rn/app-link` subpath, and the native registration is the config plugin's `appLinks` option.
+Two Sereus apps on one phone hand the request and the response to each other by opening each other with a link, so the person confirms once in A and copies nothing. The functions are platform-neutral, in `@serfab/cadre-client/app-link`; on React Native the URL schemes are registered by `@serfab/cadre-rn`'s config plugin (`appLinks` option).
 
 1. B opens a request with `LinkRequestStore.begin`, which saves the request's nonce in B's node-local database, and encodes a join request whose `reply` is that nonce and B's own URL scheme.
 2. B opens A with the request link.
@@ -59,7 +59,7 @@ Two Sereus apps on one phone hand the request and the response to each other by 
 | Request | The request text itself, `sereus-join-request:1.…` | `<A's scheme>://cadre-join-request/<request text>` |
 | Response | `<reply.scheme>://cadre-join-response/<response text>` | The same |
 
-The response text is `sereus-join-response:1.` followed by base64url canonical JSON. It carries the request's nonce, the name A calls itself (unverified), and exactly one of an encoded invitation and a refusal: `denied`, `no-cadre`, `not-owner` or `already-member` ([`join-response.ts`](../../packages/cadre-rn/src/app-link/join-response.ts)).
+The response text is `sereus-join-response:1.` followed by base64url canonical JSON. It carries the request's nonce, the name A calls itself (unverified), and exactly one of an encoded invitation and a refusal: `denied`, `no-cadre`, `not-owner` or `already-member` ([`join-response.ts`](../../packages/cadre-client/src/app-link/join-response.ts)).
 
 ### Why the answer is a link, not an Android activity result
 
@@ -93,7 +93,7 @@ An app that poses as an owner app remains a risk ([Limits and accepted tradeoffs
 
 ## Recommending another app
 
-An owner app can recommend a Sereus app the person does not have yet, or has but has not joined to this cadre, so that the recommended app, B, joins on its first launch with nothing to copy. The kit side is in `@serfab/cadre-rn/app-link`.
+An owner app can recommend a Sereus app the person does not have yet, or has but has not joined to this cadre, so that the recommended app, B, joins on its first launch with nothing to copy. The functions are in `@serfab/cadre-client/app-link`.
 
 1. In A, the person picks B from A's known-apps list and allows it to join as a machine. A records a **pre-approval** with `AppRecommendationStore.approve`: B's scheme and name from A's list, and the party A runs.
 2. A opens B's store page (`storePageLink`) when `canOpenURL` reports B not installed, and B itself (`recommendedByLink`) when it is installed.
@@ -261,6 +261,6 @@ The removal is resumable. The edge node writes a node-local marker naming B befo
 - **A join answered by link admits a machine only.** Whether a request or recommendation answered by link should also carry ownership is not decided. Until it is, an app with strands to bring joins with an owner grant redeemed separately (ticket `decide-app-link-join-carries-ownership`).
 - **A failed owner-grant join can leave the key an owner of A.** If the join fails after the grant was redeemed, the slot's key stays an owner of A while the app is back in B. A later join to A, even with a machine invitation, picks the ownership up through that key.
 - **An invitation with a `ValidationUrl` does not move.** The move drops it, and B's copy can no longer be redeemed once B's node stops running.
-- **A new Sereus app is not offered on iOS until the kit lists it.** `KNOWN_SEREUS_APPS` changes only with a kit release. Until then each app that should find the new one passes it as an extra ([kit README](../../packages/cadre-rn/README.md)). iOS reads at most 50 entries of `LSApplicationQueriesSchemes`.
+- **A new Sereus app is not offered on iOS until the kit lists it.** `KNOWN_SEREUS_APPS` (`@serfab/cadre-client/app-link`, mirrored by the kit's config plugin) changes only with a release. Until then each app that should find the new one passes it as an extra ([kit README](../../packages/cadre-rn/README.md)). iOS reads at most 50 entries of `LSApplicationQueriesSchemes`.
 - **A dissolve restarts A's node once**, because a node serves one party. The action is rare and started by the person.
 - **A move record that does not parse is deleted.** B's rows stay in B's storage and nothing adopts them into A; the dissolve check reports them as strands A does not hold.

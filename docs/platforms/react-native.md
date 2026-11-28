@@ -253,7 +253,7 @@ cadre-core sizes its liveness ping, its first-sync wait and its per-peer read de
 
 ### Background and foreground
 
-The kit's `createBackgroundRunner` (`@serfab/cadre-rn/lifecycle`) follows React Native's `AppState`. On `background` it hibernates the node's strands and leaves the control connection up for as long as the OS allows. On `active` it starts the node again from the saved start if the OS killed the process, then waits a bounded time for the control network to reconnect. The [kit README](../../packages/cadre-rn/README.md#lifecycle) has its states and options.
+`createBackgroundRunner` (`@serfab/cadre-client/lifecycle`, with the kit's `phoneNodeLifecycle` hooks) follows React Native's `AppState`. On `background` it hibernates the node's strands and leaves the control connection up for as long as the OS allows. On `active` it starts the node again from the saved start if the OS killed the process, then waits a bounded time for the control network to reconnect. The [kit README](../../packages/cadre-rn/README.md#lifecycle) has its states and options.
 
 A push wake (FCM or APNs) is the app's own code; the kit has none. [Push wake](../strands/hibernation.md#push-wake) describes the mechanism, and the reference app's `src/push-wake-native.ts` is an example.
 

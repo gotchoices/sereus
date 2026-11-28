@@ -12,3 +12,15 @@ declare const console: {
 	warn(...args: unknown[]): void;
 	error(...args: unknown[]): void;
 };
+
+/** Text to bytes and back (app-link codecs). */
+declare class TextEncoder {
+	encode(input?: string): Uint8Array;
+}
+declare class TextDecoder {
+	constructor(label?: string, options?: { fatal?: boolean });
+	decode(input?: Uint8Array): string;
+}
+
+/** Random bytes (a link request's nonce). React Native gets it from `react-native-get-random-values`. */
+declare const crypto: { getRandomValues<T extends Uint8Array>(array: T): T };
