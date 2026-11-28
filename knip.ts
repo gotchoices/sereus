@@ -38,6 +38,10 @@ const config: KnipConfig = {
 		},
 
 		'packages/cadre-cli': {},
+		'packages/cadre-client': {
+			// Screens to copy into an app, one folder per UI framework; never imported or built here.
+			ignore: ['examples/**'],
+		},
 		'packages/cadre-core': {},
 		'packages/config-check': {},
 
